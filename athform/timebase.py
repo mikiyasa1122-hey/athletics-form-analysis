@@ -46,7 +46,8 @@ class SourceFrame:
 
     @property
     def usable_for_timing(self) -> bool:
-        return "duplicate_pts" not in self.flags and "non_monotonic" not in self.flags
+        # 原本パケットに裏付けのないフレームの時刻は、計測の根拠に使わない
+        return not ({"duplicate_pts", "non_monotonic", "no_matching_packet"} & set(self.flags))
 
     def to_json(self) -> dict[str, Any]:
         return {

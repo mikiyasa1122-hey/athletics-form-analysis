@@ -162,6 +162,16 @@ class DecodeFailureTest(unittest.TestCase):
         self.assertEqual(idx.decode_failures, [1])
         self.assertEqual([f.source_frame_id for f in idx.frames], [0, 2])
 
+    def test_frame_without_packet_not_used_for_timing(self):
+        # 再レビュー N1: パケットに裏付けのない時刻のフレームは、時刻計算の根拠にしない
+        p = probe_with([0, 3000, 6001, 9000])
+        p["packets"] = self.packets([0, 3000, 6000, 9000])
+        idx = build_frame_index(p)
+        odd = next(f for f in idx.frames if f.pts == 6001)
+        self.assertIn("no_matching_packet", odd.flags)
+        self.assertFalse(odd.usable_for_timing)
+        self.assertNotIn(Fraction(6001 - 3000, 90000), idx.intervals())
+
     def test_without_packets_check_unavailable(self):
         idx = build_frame_index(probe_with([0, 3000]))
         self.assertEqual(idx.decode_check, "unavailable")
@@ -181,6 +191,9 @@ class DecodeFailureTest(unittest.TestCase):
         snap = run(CaptureSpec(capture_fps=60), probe_edit=strip)
         self.assertIsNone(snap["frame_completeness"]["source_frame_count"])
         self.assertEqual(snap["frame_completeness"]["decode_check"], "unavailable")
+        # 再レビュー N3: 確認できないことを各指標の制約として明記する
+        for m in snap["metrics"]:
+            self.assertTrue(any("復号できなかったフレーム" in x for x in m["limitations"]))
 
 
 class ExactTimeTest(unittest.TestCase):

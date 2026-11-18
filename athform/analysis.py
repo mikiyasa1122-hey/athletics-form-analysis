@@ -125,6 +125,9 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
     metrics += trunk_leans(effective, poses, inp.conditions, inp.detector.min_confidence)
     if inp.sampling.mode != ALL_SOURCE_FRAMES:
         cap_for_preview(metrics)
+    if inp.index.decode_check != "packets":
+        for m in metrics:
+            m.limitations.append("パケット情報がなく、復号できなかったフレームの有無を確認できない")
     auto_events = detection.events
 
     body = {
