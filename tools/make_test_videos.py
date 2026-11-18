@@ -29,55 +29,105 @@ FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures", "ffprobe")
 X264 = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "24", "-bf", "2", "-preset", "veryfast"]
 DUR = "1.2"   # 撮影時間（秒）。-t を出力側に置くとスロー書き出しが切り詰められるので、ソースに持たせる
 
-# 名前: (説明, 正解, ffmpeg 引数を作る関数)
+# 名前: (説明, 正解と期待値, ffmpeg 引数)
+# 期待値（expect）はエンジンの出力から写さず、動画の作り方から決める:
+#   frames = 復号されるフレーム数, gaps = 撮影時の欠落の直後のフレームID, vfr = 可変FPSか,
+#   decode_failures = 復号失敗の原本ID, discarded = edit list で再生対象外のパケット数
+_SRC240 = f"testsrc2=size=320x240:rate=240:duration={DUR}"
+_TAG240 = ["-movflags", "use_metadata_tags", "-metadata", "com.android.capture.fps=240.000000"]
+_CFR = {"gaps": [], "vfr": False, "decode_failures": [], "discarded": 0}
+
 CLIPS: dict[str, tuple[str, dict, list[str]]] = {
     "cfr240_tagged": (
         "240fps・撮影FPSメタデータあり（Android と同じキー）",
-        {"capture_time_scale": 1, "expect_status": "verified"},
-        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=240:duration={DUR}", *X264,
-         "-movflags", "use_metadata_tags", "-metadata", "com.android.capture.fps=240.000000"],
+        {"capture_time_scale": 1, "expect": {"status": "verified", "frames": 288, **_CFR}},
+        ["-f", "lavfi", "-i", _SRC240, *X264, *_TAG240],
     ),
     "cfr30_bframes": (
         "30fps・Bフレームあり（パケットは復号順、DTSは負から始まる）",
-        {"capture_time_scale": 1, "expect_status": "container_only"},
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 36, **_CFR}},
         ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=30:duration={DUR}", *X264],
     ),
     "vfr_60_30": (
-        "可変FPS: 前半60fps、後半30fps（暗所で端末がFPSを落とした想定）",
-        {"capture_time_scale": 1, "expect_status": "container_only", "expect_vfr": True, "expect_gaps": 0},
+        "可変FPS: 前半60fps（36枚）、後半30fps（36枚）。暗所で端末がFPSを落とした想定",
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 72, **_CFR, "vfr": True}},
         ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
-         # 先頭36枚は1/60秒間隔、残り36枚は1/30秒間隔に並べ直す（間引きはしない）
-         "-vf", "setpts='if(lt(N,36),N,2*N-36)/(60*TB)'",   # 整数で計算（0.6/TB は浮動小数の丸めで時刻がずれる）
+         # 整数で計算する（0.6/TB のような小数は浮動小数の丸めで時刻が1tickずれる）
+         "-vf", "setpts='if(lt(N,36),N,2*N-36)/(60*TB)'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
+    "vfr_120_30": (
+        "可変FPS: 120fps（72枚）から30fps（72枚）へ。比が4の切り替えでも欠落にしない",
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 144, **_CFR, "vfr": True}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=120:duration={DUR}",
+         "-vf", "setpts='if(lt(N,72),N,4*N-216)/(120*TB)'",
          "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
     ),
     "drop240": (
         "240fpsで撮影中に n=40〜63（0.1秒分）が記録されなかった（PTSはそのまま飛ぶ）",
-        {"capture_time_scale": 1, "expect_status": "container_only", "expect_gaps": 1, "dropped_frames": [40, 63]},
-        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=240:duration={DUR}",
-         "-vf", "select='not(between(n,40,63))'", "-fps_mode", "passthrough", *X264],
+        {"capture_time_scale": 1, "dropped_source_n": [[40, 63]],
+         "expect": {"status": "container_only", "frames": 264, **_CFR, "gaps": [40]}},
+        ["-f", "lavfi", "-i", _SRC240, "-vf", "select='not(between(n,40,63))'", "-fps_mode", "passthrough", *X264],
+    ),
+    "multi_drop240": (
+        "240fpsで1枚ずつの欠落が3枚おきに5回（n=40,43,46,49,52）。端末の発熱でフレームを落とす想定",
+        {"capture_time_scale": 1, "dropped_source_n": [[40, 40], [43, 43], [46, 46], [49, 49], [52, 52]],
+         "expect": {"status": "container_only", "frames": 283, **_CFR, "gaps": [40, 42, 44, 46, 48]}},
+        ["-f", "lavfi", "-i", _SRC240,
+         "-vf", "select='not(eq(n,40)+eq(n,43)+eq(n,46)+eq(n,49)+eq(n,52))'", "-fps_mode", "passthrough", *X264],
+    ),
+    "drop_edges240": (
+        "240fpsで2枚目（n=1）と最後から2枚目（n=286）が欠落",
+        {"capture_time_scale": 1, "dropped_source_n": [[1, 1], [286, 286]],
+         "expect": {"status": "container_only", "frames": 286, **_CFR, "gaps": [1, 285]}},
+        ["-f", "lavfi", "-i", _SRC240, "-vf", "select='not(eq(n,1)+eq(n,286))'", "-fps_mode", "passthrough", *X264],
+    ),
+    "vfr_drop": (
+        "60fps→30fpsに切り替わった直後（30fps区間の3枚目）に1枚欠落",
+        {"capture_time_scale": 1, "dropped_source_n": [[38, 38]],
+         "expect": {"status": "container_only", "frames": 71, **_CFR, "vfr": True, "gaps": [38]}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
+         "-vf", "setpts='if(lt(N,36),N,2*N-36)/(60*TB)',select='not(eq(n,38))'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
+    "mov600_240_tagged": (
+        "240fpsを time_base 1/600 の MOV に保存（間隔が 2,3 tick の交互）。撮影FPSメタデータあり",
+        {"capture_time_scale": 1, "ext": "mov", "expect": {"status": "verified", "frames": 288, **_CFR}},
+        ["-f", "lavfi", "-i", _SRC240, *X264, "-video_track_timescale", "600", *_TAG240],
+    ),
+    "coverart": (
+        "先頭にカバー画像（attached_pic）のストリームがある30fps動画",
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 36, **_CFR}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=30:duration={DUR}",
+         "-f", "lavfi", "-i", "color=c=red:size=64x64:duration=0.04",
+         "-map", "1:v", "-map", "0:v", "-c:v:0", "png", "-disposition:v:0", "attached_pic",
+         # color の duration=0.04 で1枚だけになる。-frames:v:0 は MP4 の並べ替えで映像側に効いてしまうので使わない
+         "-c:v:1", "libx264", "-pix_fmt:v:1", "yuv420p", "-g", "24", "-bf", "2"],
     ),
     "slowmo8_plain": (
         "240fps撮影を8倍に引き伸ばして30fpsタイムラインに書き出したスロー（メタデータなし）",
-        {"capture_time_scale": 8, "expect_status": "container_only"},
-        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=240:duration={DUR}", "-vf", "setpts=8*PTS", "-r", "30", *X264],
+        {"capture_time_scale": 8, "expect": {"status": "container_only", "frames": 288, **_CFR}},
+        ["-f", "lavfi", "-i", _SRC240, "-vf", "setpts=8*PTS", "-r", "30", *X264],
     ),
     "slowmo8_tagged": (
         "同じスロー書き出しに撮影FPSメタデータ（240）が付いている",
-        {"capture_time_scale": 8, "expect_status": "slowmo_suspected"},
-        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=240:duration={DUR}", "-vf", "setpts=8*PTS", "-r", "30", *X264,
-         "-movflags", "use_metadata_tags", "-metadata", "com.android.capture.fps=240.000000"],
+        {"capture_time_scale": 8, "expect": {"status": "slowmo_suspected", "frames": 288, **_CFR}},
+        ["-f", "lavfi", "-i", _SRC240, "-vf", "setpts=8*PTS", "-r", "30", *X264, *_TAG240],
     ),
 }
 # 2段階で作るもの（元動画を加工する）
 DERIVED = {
-    "cut_copy": ("cfr30_bframes", "30fpsを先頭0.3秒でカット（再エンコードなし）。edit list で先頭パケットが再生対象外（flags D）になる",
-                 {"capture_time_scale": 1, "expect_status": "container_only", "expect_decode_failures": 0}),
+    "cut_copy": ("cfr30_bframes",
+                 "30fpsを先頭0.3秒でカット（再エンコードなし）。edit list で先頭9パケットが再生対象外（flags D）になる",
+                 {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 27, **_CFR, "discarded": 9}}),
     "corrupt": ("cfr30_bframes", "30fpsの非キーフレーム2つのパケットの中身を0で潰した（デコーダがフレームを落とす）",
-                {"capture_time_scale": 1, "expect_status": "container_only"}),
+                # 復号失敗の原本IDは、壊したパケットのPTSから決まる（corrupted_packet_pts）
+                {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 34, "gaps": [], "vfr": False,
+                                                     "discarded": 0}}),
 }
 
 KEEP_ENTRY = ("type", "media_type", "codec_type", "stream_index", "pts", "dts", "pkt_dts", "flags")
-KEEP_STREAM = ("index", "codec_type", "codec_name", "time_base", "avg_frame_rate", "r_frame_rate", "tags")
+KEEP_STREAM = ("index", "codec_type", "codec_name", "time_base", "avg_frame_rate", "r_frame_rate", "tags", "disposition")
 
 
 def trim(probe: dict) -> dict:
@@ -117,7 +167,7 @@ def build(ffmpeg: str, ffprobe: str) -> dict[str, dict]:
     os.makedirs(VIDEO_DIR, exist_ok=True)
     results: dict[str, dict] = {}
     for name, (desc, truth, args) in CLIPS.items():
-        path = os.path.join(VIDEO_DIR, f"{name}.mp4")
+        path = os.path.join(VIDEO_DIR, f"{name}.{truth.get('ext', 'mp4')}")
         run([ffmpeg, "-v", "error", "-y", *args, path])
         results[name] = {"description": desc, "truth": dict(truth), "probe": trim(probe(ffprobe, path))}
     for name, (base, desc, truth) in DERIVED.items():
@@ -153,6 +203,14 @@ def main(argv: list[str] | None = None) -> int:
                 d.get("format", {}).pop("size", None)
             if saved != r["probe"]:
                 bad.append(name)
+        # manifest（作り方と期待値）も、作り直した内容と一致すること（レビュー N8）
+        with open(os.path.join(FIXTURE_DIR, "manifest.json"), encoding="utf-8") as fh:
+            saved_clips = json.load(fh)["clips"]
+        for name, r in results.items():
+            if saved_clips.get(name) != {"description": r["description"], "truth": r["truth"]}:
+                bad.append(f"manifest:{name}")
+        if set(saved_clips) != set(results):
+            bad.append("manifest:clip-list")
         if bad:
             print("保存済みフィクスチャと一致しない:", ", ".join(bad), f"（{version}）", file=sys.stderr)
             return 1

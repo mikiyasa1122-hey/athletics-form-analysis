@@ -5,64 +5,253 @@
    "description": "240fps・撮影FPSメタデータあり（Android と同じキー）",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "verified"
+    "expect": {
+     "status": "verified",
+     "frames": 288,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "cfr30_bframes": {
    "description": "30fps・Bフレームあり（パケットは復号順、DTSは負から始まる）",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "container_only"
+    "expect": {
+     "status": "container_only",
+     "frames": 36,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "vfr_60_30": {
-   "description": "可変FPS: 前半60fps、後半30fps（暗所で端末がFPSを落とした想定）",
+   "description": "可変FPS: 前半60fps（36枚）、後半30fps（36枚）。暗所で端末がFPSを落とした想定",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "container_only",
-    "expect_vfr": true,
-    "expect_gaps": 0
+    "expect": {
+     "status": "container_only",
+     "frames": 72,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "vfr_120_30": {
+   "description": "可変FPS: 120fps（72枚）から30fps（72枚）へ。比が4の切り替えでも欠落にしない",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect": {
+     "status": "container_only",
+     "frames": 144,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "drop240": {
    "description": "240fpsで撮影中に n=40〜63（0.1秒分）が記録されなかった（PTSはそのまま飛ぶ）",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "container_only",
-    "expect_gaps": 1,
-    "dropped_frames": [
-     40,
-     63
-    ]
+    "dropped_source_n": [
+     [
+      40,
+      63
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 264,
+     "gaps": [
+      40
+     ],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "multi_drop240": {
+   "description": "240fpsで1枚ずつの欠落が3枚おきに5回（n=40,43,46,49,52）。端末の発熱でフレームを落とす想定",
+   "truth": {
+    "capture_time_scale": 1,
+    "dropped_source_n": [
+     [
+      40,
+      40
+     ],
+     [
+      43,
+      43
+     ],
+     [
+      46,
+      46
+     ],
+     [
+      49,
+      49
+     ],
+     [
+      52,
+      52
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 283,
+     "gaps": [
+      40,
+      42,
+      44,
+      46,
+      48
+     ],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "drop_edges240": {
+   "description": "240fpsで2枚目（n=1）と最後から2枚目（n=286）が欠落",
+   "truth": {
+    "capture_time_scale": 1,
+    "dropped_source_n": [
+     [
+      1,
+      1
+     ],
+     [
+      286,
+      286
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 286,
+     "gaps": [
+      1,
+      285
+     ],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "vfr_drop": {
+   "description": "60fps→30fpsに切り替わった直後（30fps区間の3枚目）に1枚欠落",
+   "truth": {
+    "capture_time_scale": 1,
+    "dropped_source_n": [
+     [
+      38,
+      38
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 71,
+     "gaps": [
+      38
+     ],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "mov600_240_tagged": {
+   "description": "240fpsを time_base 1/600 の MOV に保存（間隔が 2,3 tick の交互）。撮影FPSメタデータあり",
+   "truth": {
+    "capture_time_scale": 1,
+    "ext": "mov",
+    "expect": {
+     "status": "verified",
+     "frames": 288,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "coverart": {
+   "description": "先頭にカバー画像（attached_pic）のストリームがある30fps動画",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect": {
+     "status": "container_only",
+     "frames": 36,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "slowmo8_plain": {
    "description": "240fps撮影を8倍に引き伸ばして30fpsタイムラインに書き出したスロー（メタデータなし）",
    "truth": {
     "capture_time_scale": 8,
-    "expect_status": "container_only"
+    "expect": {
+     "status": "container_only",
+     "frames": 288,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "slowmo8_tagged": {
    "description": "同じスロー書き出しに撮影FPSメタデータ（240）が付いている",
    "truth": {
     "capture_time_scale": 8,
-    "expect_status": "slowmo_suspected"
+    "expect": {
+     "status": "slowmo_suspected",
+     "frames": 288,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 0
+    }
    }
   },
   "cut_copy": {
-   "description": "30fpsを先頭0.3秒でカット（再エンコードなし）。edit list で先頭パケットが再生対象外（flags D）になる",
+   "description": "30fpsを先頭0.3秒でカット（再エンコードなし）。edit list で先頭9パケットが再生対象外（flags D）になる",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "container_only",
-    "expect_decode_failures": 0
+    "expect": {
+     "status": "container_only",
+     "frames": 27,
+     "gaps": [],
+     "vfr": false,
+     "decode_failures": [],
+     "discarded": 9
+    }
    }
   },
   "corrupt": {
    "description": "30fpsの非キーフレーム2つのパケットの中身を0で潰した（デコーダがフレームを落とす）",
    "truth": {
     "capture_time_scale": 1,
-    "expect_status": "container_only",
+    "expect": {
+     "status": "container_only",
+     "frames": 34,
+     "gaps": [],
+     "vfr": false,
+     "discarded": 0
+    },
     "corrupted_packet_pts": [
      4608,
      5632

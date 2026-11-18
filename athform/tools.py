@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import shutil
+
+
+def _version_key(path: str) -> tuple[int, ...]:
+    m = re.search(r"ffmpeg-(\d+(?:\.\d+)*)", path.replace("\\", "/"))
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 
 def find_tool(name: str) -> str | None:
@@ -21,7 +27,7 @@ def find_tool(name: str) -> str | None:
     local = os.environ.get("LOCALAPPDATA")
     if local:
         pattern = os.path.join(local, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "ffmpeg-*", "bin", f"{name}.exe")
-        hits = sorted(glob.glob(pattern))
+        hits = glob.glob(pattern)
         if hits:
-            return hits[-1]
+            return max(hits, key=_version_key)   # 文字列順だと 9.x が 10.x より後になる
     return None

@@ -138,7 +138,10 @@ class DecodeFailureTest(unittest.TestCase):
         self.assertEqual(idx.decode_failures, [1])
         self.assertEqual(idx.decode_check, "packets")
         self.assertEqual([f.source_frame_id for f in idx.frames], [0, 2, 3, 4, 5])  # 失敗しても後ろのIDは詰まらない
-        self.assertIn("after_gap", idx.by_id(2).flags)
+        # 復号失敗で空いた間隔は、撮影時の欠落とは区別する（レビュー N5）
+        self.assertIn("after_decode_failure", idx.by_id(2).flags)
+        self.assertNotIn("after_gap", idx.by_id(2).flags)
+        self.assertEqual(idx.quality_report()["gap_frame_ids"], [])
 
     def test_packets_in_decode_order(self):
         # Bフレームのあるストリームではパケットは復号順（PTS順でない）。PTS順で原本IDを振る
@@ -171,6 +174,34 @@ class DecodeFailureTest(unittest.TestCase):
         self.assertIn("no_matching_packet", odd.flags)
         self.assertFalse(odd.usable_for_timing)
         self.assertNotIn(Fraction(6001 - 3000, 90000), idx.intervals())
+
+    def test_all_packets_discarded_reported(self):
+        # 再レビュー N6: パケットはあるが全部 D のときは「確認できない」と黙らず、理由が分かる状態にする
+        p = probe_with([0, 3000])
+        p["packets"] = [dict(x, flags="KD_") for x in self.packets([0, 3000])]
+        idx = build_frame_index(p)
+        self.assertEqual(idx.decode_check, "all_packets_discarded")
+        self.assertEqual(idx.quality_report()["discarded_packet_count"], 2)
+
+    def test_cover_art_stream_skipped(self):
+        # 再レビュー N7: 先頭がカバー画像（attached_pic）でも、映像ストリームを選ぶ
+        p = probe_with([0, 3000, 6000])
+        p["streams"].insert(0, {"index": 1, "codec_type": "video", "time_base": "1/90000",
+                                "disposition": {"attached_pic": 1}})
+        idx = build_frame_index(p)
+        self.assertEqual(len(idx.frames), 3)
+        p["streams"] = p["streams"][:1]
+        with self.assertRaises(TimebaseError):
+            build_frame_index(p)   # カバー画像しかなければ映像ストリームはない
+
+    def test_tick_rounding_is_not_vfr(self):
+        # 再レビュー N2: 240fps を 1/600 で表すと 2,3 tick の交互。固定FPSとして扱い、240fps と測る
+        p = probe_with([sum((2, 3)[i % 2] for i in range(k)) for k in range(48)], time_base="1/600", fps="240/1")
+        idx = build_frame_index(p, declared_capture_fps="240")
+        q = idx.quality_report()
+        self.assertFalse(q["vfr"])
+        self.assertEqual(q["gap_frame_ids"], [])
+        self.assertEqual(idx.capture_time_status, "container_only")   # 申告とフレーム間隔が一致
 
     def test_without_packets_check_unavailable(self):
         idx = build_frame_index(probe_with([0, 3000]))

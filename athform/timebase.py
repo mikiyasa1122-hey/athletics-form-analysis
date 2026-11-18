@@ -92,7 +92,7 @@ class FrameIndex:
     def intervals(self, *, exclude_gaps: bool = False) -> list[Fraction]:
         timed = [f for f in self.frames if f.usable_for_timing]
         return [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])
-                if not (exclude_gaps and "after_gap" in b.flags)]
+                if not (exclude_gaps and {"after_gap", "after_decode_failure"} & set(b.flags))]
 
     @property
     def time_axis_valid(self) -> bool:
@@ -102,6 +102,7 @@ class FrameIndex:
         ivs = self.intervals()
         med = median(ivs) if ivs else None
         gaps = [f.source_frame_id for f in self.frames if "after_gap" in f.flags]
+        decode_gaps = [f.source_frame_id for f in self.frames if "after_decode_failure" in f.flags]
         dups = [f.source_frame_id for f in self.frames if "duplicate_pts" in f.flags]
         return {
             "frame_count": len(self.frames),
@@ -114,8 +115,9 @@ class FrameIndex:
                 "median": float(med) if med is not None else None,
                 "max": float(max(ivs)) if ivs else None,
             },
-            "vfr": is_vfr(self.intervals(exclude_gaps=True)),
-            "gap_frame_ids": gaps,
+            "vfr": is_vfr(self.intervals(exclude_gaps=True), self.time_base),
+            "gap_frame_ids": gaps,                      # 撮影時の欠落の疑い
+            "after_decode_failure_frame_ids": decode_gaps,  # 復号失敗で間隔が空いたフレーム（欠落とは区別）
             "discarded_packet_count": self.discarded_packets,
             "duplicate_pts_frame_ids": dups,
             "decode_failures": list(self.decode_failures),
@@ -138,12 +140,19 @@ def parse_fraction(text: str | None) -> Fraction | None:
     return value if value > 0 else None
 
 
-def is_vfr(intervals: list[Fraction]) -> bool:
-    """欠落を除いたフレーム間隔が、中央値の2%を超えてばらつくか。"""
+def is_vfr(intervals: list[Fraction], tick: Fraction | None = None) -> bool:
+    """欠落を除いたフレーム間隔が、中央値の2%を超えてばらつくか。
+
+    time_base の丸め（±1tick）によるばらつきは無視する。240fps を 1/600 で表すと間隔は 2,3 tick の交互になるが、
+    これは固定FPS（レビュー N2）。
+    """
     if len(intervals) < 2:
         return False
     med = median(intervals)
-    return (max(intervals) - min(intervals)) > med * VFR_TOLERANCE
+    spread = max(intervals) - min(intervals)
+    if tick is not None and spread <= tick:
+        return False
+    return spread > med * VFR_TOLERANCE
 
 
 def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None = None,
@@ -153,7 +162,9 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
     frames は ffprobe が返す出力順（＝提示順）で並んでいる前提。順序が逆転していれば
     non_monotonic として記録し、時間軸を無効にする。
     """
-    streams = [s for s in probe.get("streams", []) if s.get("codec_type") == "video"]
+    # カバー画像（disposition.attached_pic）は映像ではないので選ばない（レビュー N7）
+    streams = [s for s in probe.get("streams", []) if s.get("codec_type") == "video"
+               and not (s.get("disposition") or {}).get("attached_pic")]
     if not streams:
         raise TimebaseError("映像ストリームがない")
     stream = streams[0]
@@ -208,7 +219,7 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
     if packet_rank is None:
         frames = [replace(f, source_frame_id=f.presentation_index) for f in frames]
         decode_failures: list[int] = []
-        decode_check = "unavailable"
+        decode_check = "unavailable" if not raw_packets else "all_packets_discarded"
     else:
         # パケットに対応しないフレーム（重複PTS等）には、パケット数の後ろから衝突しないIDを振る
         extra = len(packet_rank)
@@ -223,7 +234,8 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
         decode_failures = [rank for pts, rank in sorted(packet_rank.items(), key=lambda kv: kv[1]) if pts not in decoded]
         decode_check = "packets"
 
-    frames = _mark_gaps(frames)
+    failed_pts = {pts for pts, rank in packet_rank.items() if rank in set(decode_failures)} if packet_rank else set()
+    frames = _mark_gaps(frames, failed_pts)
     nominal = parse_fraction(stream.get("avg_frame_rate")) or parse_fraction(stream.get("r_frame_rate"))
     index = FrameIndex(frames=frames, time_base=time_base, nominal_fps=nominal, capture_fps=None,
                        capture_time_status=UNKNOWN, decode_failures=decode_failures, decode_check=decode_check,
@@ -259,36 +271,67 @@ def _require_pts(entry: dict[str, Any], label: str) -> int:
 GAP_WINDOW = 4   # 欠落の判定で比べる前後の間隔の数
 
 
-def _mark_gaps(frames: list[SourceFrame]) -> list[SourceFrame]:
-    """前後の間隔（局所的な中央値）より明らかに長い間隔を「欠落の疑い」とする。
+def _settled(iv: Fraction, window: list[Fraction], tick: Fraction) -> bool:
+    """window の間隔がおおむね iv と同じ長さで続いている（＝FPSが切り替わって落ち着いた）か。"""
+    if len(window) < 2:
+        return False
+    m = median(window)
+    return abs(m - iv) <= max(2 * tick, iv / 10)
 
-    全体の中央値と比べると、可変FPS（例: 前半60fps・後半30fps）の遅い区間がすべて欠落に見えてしまう。
+
+def _mark_gaps(frames: list[SourceFrame], decode_failed_pts: set[int] | None = None) -> list[SourceFrame]:
+    """欠落の疑いを付ける。
+
+    基準は前後 GAP_WINDOW 個の間隔のうち最短のもの（基準間隔）。その1.5倍を超える間隔は欠落の候補になる。
+    ただし、その後（末尾なら前）の間隔が同じ長さで続いていれば、欠落ではなくFPSの切り替え（可変FPS）とみなす。
+    - 中央値と比べる方式だと、近い間隔で何度も欠落すると中央値が引き上げられて見逃す（レビュー B1）。
+    - 全体の中央値と比べる方式だと、可変FPSの遅い区間がすべて欠落に見える。
+    原本パケットはあるのに復号できなかったフレームが原因なら、撮影時の欠落とは区別して after_decode_failure とする。
     """
     timed = [f for f in frames if f.usable_for_timing]
     ivs = [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])]
     if not ivs:
         return frames
-    gap_ids = set()
+    tick = timed[0].time_base
+    failed = decode_failed_pts or set()
+    marks: dict[int, str] = {}
     for i, iv in enumerate(ivs):
-        neighbors = ivs[max(0, i - GAP_WINDOW):i] + ivs[i + 1:i + 1 + GAP_WINDOW]
-        local = median(neighbors) if neighbors else iv
-        if iv > local * GAP_FACTOR:
-            gap_ids.add(timed[i + 1].source_frame_id)
+        before = ivs[max(0, i - GAP_WINDOW):i]
+        after = ivs[i + 1:i + 1 + GAP_WINDOW]
+        neighbors = before + after
+        if not neighbors:
+            continue
+        base = min(neighbors)
+        if iv <= base * GAP_FACTOR:
+            continue
+        follow = after if len(after) >= 2 else before
+        if _settled(iv, follow, tick):
+            continue   # その長さで続いている → FPSの切り替え
+        a, b = timed[i], timed[i + 1]
+        explained = any(a.pts < p < b.pts for p in failed)
+        marks[b.source_frame_id] = "after_decode_failure" if explained else "after_gap"
     out = []
     for f in frames:
-        if f.source_frame_id in gap_ids:
-            f = SourceFrame(f.source_frame_id, f.presentation_index, f.pts, f.time_base, f.timestamp,
-                            f.flags + ("after_gap",))
+        if f.source_frame_id in marks:
+            f = replace(f, flags=f.flags + (marks[f.source_frame_id],))
         out.append(f)
     return out
 
 
+def _regular_intervals(index: "FrameIndex") -> list[Fraction]:
+    timed = [f for f in index.frames if f.usable_for_timing]
+    return [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])
+            if not ({"after_gap", "after_decode_failure"} & set(b.flags))]
+
+
 def _measured_fps(index: FrameIndex) -> Fraction | None:
-    ivs = index.intervals()
+    """欠落を除いた間隔の平均から求める。time_base で割り切れない間隔（例: 240fps を 1/600 で表すと 2,3 tick の交互）
+    でも、中央値でなく平均を使えば正しい値になる（レビュー N2）。"""
+    ivs = _regular_intervals(index)
     if not ivs:
         return None
-    med = median(ivs)
-    return 1 / med if med > 0 else None
+    mean = sum(ivs, Fraction(0)) / len(ivs)
+    return 1 / mean if mean > 0 else None
 
 
 def _close(a: Fraction, b: Fraction) -> bool:
