@@ -79,6 +79,7 @@
         <h2 id="v-title"></h2>
         <span id="v-preview" class="tag" hidden>プレビュー</span>
       </div>
+      <p id="version-note" class="note warn-text" hidden></p>
       <div id="job-box" class="job" hidden>
         <span id="job-text" aria-live="polite"></span>
         <progress id="job-progress" max="1" value="0"></progress>
@@ -174,6 +175,9 @@
           <tbody id="events-body"></tbody>
         </table>
       </div>
+      <h3>訂正の記録</h3>
+      <p class="note">取り消しても記録は残ります。地面の線を変えたなどで、訂正したイベントが無くなると「適用できなかった」と表示されます。</p>
+      <ul id="corrections-list" class="notes"></ul>
     </section>
 
     <section class="panel wide-panel" aria-labelledby="h-metrics">

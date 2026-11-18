@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   progress REAL NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', error TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS analyses (
-  analysis_id TEXT NOT NULL, video_id TEXT NOT NULL, created_at TEXT NOT NULL, mode TEXT NOT NULL,
-  model TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY (video_id, analysis_id)
+CREATE TABLE IF NOT EXISTS analysis_versions (
+  video_id TEXT NOT NULL, revision INTEGER NOT NULL, analysis_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  mode TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY (video_id, revision)
 );
 """
 VIDEO_FIELDS = ("discipline", "camera_view", "direction", "practice_date", "place", "record", "notes", "tags",
@@ -53,6 +53,10 @@ class StoreError(ValueError):
 
 class NotFound(KeyError):
     pass
+
+
+class Busy(StoreError):
+    """実行中の解析と衝突する操作（HTTP 409）。"""
 
 
 def now() -> str:
@@ -150,16 +154,41 @@ class Store:
         d = self.video_dir(video_id)
         self.get_video(video_id)
         with self._lock:
+            if self._active_job(video_id):
+                # 解析中に消すと、ワーカーが書き続けて残骸が残る。先に取り消してもらう（レビュー B2）
+                raise Busy("解析中の動画は削除できない。解析を取り消してから削除する")
             self._db.execute("DELETE FROM videos WHERE id=?", (video_id,))
-            self._db.execute("DELETE FROM analyses WHERE video_id=?", (video_id,))
+            self._db.execute("DELETE FROM analysis_versions WHERE video_id=?", (video_id,))
             self._db.execute("DELETE FROM jobs WHERE video_id=?", (video_id,))
             self._db.commit()
         shutil.rmtree(d, ignore_errors=True)   # 元動画・派生物・姿勢・解析をまとめて消す（FR-HIST-005, AC-009）
+        if os.path.exists(d):
+            raise StoreError("一部のファイルを削除できなかった（他のプログラムが開いている可能性）。もう一度削除する")
+
+    def _active_job(self, video_id: str):
+        return self._db.execute("SELECT id FROM jobs WHERE video_id=? AND state IN "
+                                "('queued','probing','inferring','analyzing','cancel_requested')", (video_id,)).fetchone()
+
+    def cleanup_orphans(self) -> list[str]:
+        """DB に行のない動画フォルダ（強制終了したアップロードの残骸）を消す。"""
+        with self._lock:
+            known = {r[0] for r in self._db.execute("SELECT id FROM videos").fetchall()}
+        removed = []
+        for name in os.listdir(os.path.join(self.root, "videos")):
+            if ID_RE.match(name) and name not in known:
+                shutil.rmtree(os.path.join(self.root, "videos", name), ignore_errors=True)
+                removed.append(name)
+        return removed
 
     # ---------- JSON ファイル ----------
-    def write_json(self, video_id: str, name: str, obj: Any) -> str:
-        path = os.path.join(self.video_dir(video_id), name)
+    def write_json(self, video_id: str, name: str, obj: Any, exclusive: bool = False) -> str:
+        vdir = self.video_dir(video_id)
+        if not os.path.isdir(vdir):
+            raise NotFound(video_id)   # 削除された動画のフォルダを作り直さない（レビュー B2）
+        path = os.path.join(vdir, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if exclusive and os.path.exists(path):
+            raise StoreError(f"{name} はすでにある。解析の版は上書きしない")
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, ensure_ascii=False)
@@ -174,26 +203,34 @@ class Store:
             return json.load(fh)
 
     # ---------- 解析 ----------
-    def save_analysis(self, video_id: str, snapshot: dict[str, Any], mode: str, revision: int) -> None:
-        aid = snapshot["analysis_id"]
-        self.write_json(video_id, f"analyses/{aid}.json", snapshot)
-        with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO analyses VALUES (?,?,?,?,?,?)",
-                             (aid, video_id, now(), mode, json.dumps(snapshot["model"], ensure_ascii=False), revision))
-            self._db.execute("UPDATE videos SET latest_analysis=? WHERE id=?", (aid, video_id))
-            self._db.commit()
+    def save_analysis(self, video_id: str, snapshot: dict[str, Any], mode: str) -> int:
+        """解析を新しい版として保存する。既存の版のファイルは書き換えない（レビュー B3）。版の番号を返す。
 
-    def get_analysis(self, video_id: str, analysis_id: str | None = None) -> dict[str, Any] | None:
+        analysis_id は解析の入力と結果から決まる（同じ入力なら同じ ID: 再現性）。版はそれとは別に毎回増える。
+        """
+        with self._lock:
+            row = self._db.execute("SELECT MAX(revision) FROM analysis_versions WHERE video_id=?", (video_id,)).fetchone()
+            revision = (row[0] or 0) + 1
+            snapshot["revision"] = revision
+            self.write_json(video_id, f"analyses/r{revision}.json", snapshot, exclusive=True)
+            self._db.execute("INSERT INTO analysis_versions VALUES (?,?,?,?,?,?)",
+                             (video_id, revision, snapshot["analysis_id"], now(), mode,
+                              json.dumps(snapshot["model"], ensure_ascii=False)))
+            self._db.execute("UPDATE videos SET latest_analysis=? WHERE id=?", (str(revision), video_id))
+            self._db.commit()
+        return revision
+
+    def get_analysis(self, video_id: str, revision: int | str | None = None) -> dict[str, Any] | None:
         v = self.get_video(video_id)
-        aid = analysis_id or v["latest_analysis"]
-        if not aid or not re.fullmatch(r"[0-9a-f]{64}", aid):
+        rev = revision if revision not in (None, "") else v["latest_analysis"]
+        if rev is None or not re.fullmatch(r"\d{1,6}", str(rev)):
             return None
-        return self.read_json(video_id, f"analyses/{aid}.json")
+        return self.read_json(video_id, f"analyses/r{int(rev)}.json")
 
     def list_analyses(self, video_id: str) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(r) for r in self._db.execute(
-                "SELECT * FROM analyses WHERE video_id=? ORDER BY created_at DESC", (video_id,)).fetchall()]
+                "SELECT * FROM analysis_versions WHERE video_id=? ORDER BY revision DESC", (video_id,)).fetchall()]
 
     # ---------- ジョブ ----------
     def add_job(self, video_id: str, kind: str, mode: str) -> dict[str, Any]:
@@ -203,7 +240,7 @@ class Store:
                                       "('queued','probing','inferring','analyzing','cancel_requested')",
                                       (video_id,)).fetchone()
             if active:
-                raise StoreError("この動画の解析はすでに実行中")   # 二重実行を防ぐ（ARCH-004）
+                raise Busy("この動画の解析はすでに実行中")   # 二重実行を防ぐ（ARCH-004）
             self._db.execute("INSERT INTO jobs (id, video_id, kind, mode, state, created_at, updated_at) "
                              "VALUES (?,?,?,?,?,?,?)", (jid, video_id, kind, mode, "queued", now(), now()))
             self._db.commit()
@@ -217,6 +254,18 @@ class Store:
         if r is None:
             raise NotFound(job_id)
         return dict(r)
+
+    def transition_job(self, job_id: str, to_state: str, from_states: tuple[str, ...], **fields: Any) -> bool:
+        """状態が from_states のどれかのときだけ変える（取消と完了の競合で、完了したジョブを上書きしない: レビュー N1）。"""
+        fields["state"] = to_state
+        fields["updated_at"] = now()
+        with self._lock:
+            sets = ",".join(f"{k}=?" for k in fields)
+            marks = ",".join("?" * len(from_states))
+            cur = self._db.execute(f"UPDATE jobs SET {sets} WHERE id=? AND state IN ({marks})",
+                                   (*fields.values(), job_id, *from_states))
+            self._db.commit()
+            return cur.rowcount == 1
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         if "state" in fields and fields["state"] not in JOB_STATES:

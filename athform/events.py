@@ -130,7 +130,12 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                 if last_state is not None:
                     unobserved_between = True
                 continue
-            if last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
+            if last_state is not None and last_frame is not None and pose is not None and "reacquired" in pose.flags:
+                # 対象の人物を見失って取り直した。別人の可能性があるので、つながず区切る（レビュー B4）
+                breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
+                                               last_frame.timestamp, frame.timestamp,
+                                               "対象の人物を見失い、取り直した（別人の可能性）"))
+            elif last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
                 # 途切れが長いと、間で何回遷移したか分からない。イベントを作らず区切りとして記録する
                 if "after_decode_failure" in frame.flags and not unobserved_between:
                     why = "復号できなかったフレーム"
@@ -200,13 +205,16 @@ class Correction:
     event_type: str | None = None
     side: str | None = None
     after_frame_id: int | None = None   # 新状態が初めて見える原本フレーム
+    revoked_at: str | None = None       # 取り消した日時（記録は消さずに残す）
+    revoked_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> "Correction":
-        allowed = {"action", "corrected_by", "corrected_at", "reason", "event_id", "event_type", "side", "after_frame_id"}
+        allowed = {"action", "corrected_by", "corrected_at", "reason", "event_id", "event_type", "side", "after_frame_id",
+                   "revoked_at", "revoked_reason"}
         extra = set(d) - allowed
         if extra:
             raise CorrectionError(f"不明な項目: {sorted(extra)}")
@@ -220,11 +228,26 @@ class Correction:
 class EventLayers:
     auto: list[MotionEvent]
     corrections: list[Correction] = field(default_factory=list)
+    unapplied: list[dict[str, Any]] = field(default_factory=list)
 
-    def effective(self, index: FrameIndex, breaks: list[ObservationBreak] | None = None) -> list[MotionEvent]:
+    def effective(self, index: FrameIndex, breaks: list[ObservationBreak] | None = None,
+                  strict: bool = True) -> list[MotionEvent]:
+        """訂正を順に当てる。strict=False（保存済みの訂正での再解析）では、当てられない訂正で失敗せず記録する。
+
+        地面の線や推論のやり直しで自動イベントが変わると、訂正が参照していたイベントがなくなることがある。
+        その訂正は「適用できなかった訂正」として版に残し、解析自体は続ける（訂正は取り消しも作り直しもできる）。
+        """
         current = {e.event_id: e for e in self.auto}
-        for c in self.corrections:
-            current = _apply(current, c, index)
+        self.unapplied = []
+        for i, c in enumerate(self.corrections):
+            if c.revoked_at:
+                continue
+            try:
+                current = _apply(current, c, index)
+            except CorrectionError as exc:
+                if strict:
+                    raise
+                self.unapplied.append({"index": i, "correction": c.to_json(), "reason": str(exc)})
         return validate_sequence(sort_events(list(current.values())), breaks or [])
 
 

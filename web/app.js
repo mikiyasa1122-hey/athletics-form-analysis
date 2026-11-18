@@ -255,6 +255,7 @@
     current = await api("GET", "/api/videos/" + id);
     const v = current.video;
     $("v-title").textContent = disciplineName(v.discipline) + " — " + v.filename + (v.practice_date ? "（" + v.practice_date + "）" : "");
+    $("version-note").hidden = true;
     $("export-link").href = "/api/videos/" + id + "/export";
     fillMeta(v);
     renderHistory();
@@ -279,11 +280,14 @@
       : "足の最下点から自動で推定しています。カメラが動く動画では外れることがあります。";
   }
 
-  async function loadAnalysis(analysisId) {
+  let viewingLatest = true;
+  async function loadAnalysis(revision) {
     let snap = null;
     try {
-      snap = await api("GET", "/api/videos/" + current.video.id + "/analysis" + (analysisId ? "?analysis_id=" + analysisId : ""));
+      snap = await api("GET", "/api/videos/" + current.video.id + "/analysis" + (revision ? "?revision=" + revision : ""));
     } catch (err) { snap = null; }
+    const latest = current.analyses.length ? current.analyses[0].revision : null;
+    viewingLatest = !snap || !latest || snap.revision === latest;
     $("no-analysis").hidden = !!snap;
     $("player").hidden = !snap;
     if (!snap) { model = null; renderEmptyPanels(); return; }
@@ -296,7 +300,56 @@
     $("scrubber").max = String(model.frames.length - 1);
     $("v-preview").hidden = !snap.preview;
     $("v-preview").textContent = snap.preview ? "プレビュー（正式な計測ではない）" : "";
-    renderQuality(); renderEvents(); renderMetrics(); render();
+    renderTitle();
+    renderQuality(); renderEvents(); renderMetrics(); renderCorrections(); render();
+  }
+
+  function renderTitle() {
+    const s = model.snapshot, v = current.video;
+    const name = (s.discipline && s.discipline.name) || disciplineName(s.capture_conditions.discipline);
+    $("v-title").textContent = name + " — " + v.filename + (v.practice_date ? "（" + v.practice_date + "）" : "") +
+      "　版 " + (s.revision || "?");
+    const notes = [];
+    if (!viewingLatest) notes.push("過去の版を表示しています。訂正は最新の版にだけできます。");
+    if (s.capture_conditions.discipline !== v.discipline || (s.capture_conditions.camera_view || "") !== (v.camera_view || "")) {
+      notes.push("動画の情報（種目・撮影角度）が、この版を解析したときと違います。最新の情報で計算し直すには「保存して再計算」を押してください。");
+    }
+    $("version-note").textContent = notes.join(" ");
+    $("version-note").hidden = !notes.length;
+    for (const id of ["c-add", "c-reason"]) $(id).disabled = !viewingLatest;
+  }
+
+  function renderCorrections() {
+    const ul = $("corrections-list");
+    clear(ul);
+    const unapplied = new Map(((model.snapshot.events || {}).unapplied_corrections || []).map((u) => [u.index, u.reason]));
+    const list = current.corrections || [];
+    const label = { move: "移動", add: "追加", delete: "削除" };
+    list.forEach((c, i) => {
+      const li = node("li");
+      const what = (label[c.action] || c.action) + "　" + (c.event_id || ((c.side === "left" ? "左" : "右") + (c.event_type === "toe_off" ? "離地" : "接地"))) +
+        (c.after_frame_id !== null && c.after_frame_id !== undefined ? " → frame " + c.after_frame_id : "") + "　理由: " + c.reason;
+      let state = "適用";
+      if (c.revoked_at) state = "取り消し済み（" + (c.revoked_reason || "") + "）";
+      else if (unapplied.has(i)) state = "適用できなかった: " + unapplied.get(i);
+      li.appendChild(node("span", what + "　［" + state + "］"));
+      if (!c.revoked_at && viewingLatest) {
+        li.appendChild(document.createTextNode(" "));
+        li.appendChild(button("取り消す", () => revokeCorrection(i)));
+      }
+      ul.appendChild(li);
+    });
+    if (!list.length) ul.appendChild(node("li", "まだありません"));
+  }
+
+  async function revokeCorrection(i) {
+    const reason = $("c-reason").value.trim();
+    if (!reason) { $("c-status").textContent = "取り消しの理由を「訂正の理由」に入力してください"; $("c-reason").focus(); return; }
+    try {
+      const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections/" + i + "/revoke", { reason: reason });
+      await afterCorrection(snap);
+      $("c-status").textContent = "訂正を取り消し、計算し直しました";
+    } catch (err) { $("c-status").textContent = "取り消せませんでした: " + err.message; }
   }
 
   function renderEmptyPanels() {
@@ -310,7 +363,7 @@
     for (const a of current.analyses) {
       const li = node("li");
       const b = button("版 " + a.revision + "（" + a.created_at.replace("T", " ").slice(0, 16) + "、" + a.mode + "）",
-                       () => loadAnalysis(a.analysis_id));
+                       () => loadAnalysis(a.revision));
       li.appendChild(b);
       ul.appendChild(li);
     }
@@ -399,17 +452,24 @@
     if (!reason) { $("c-status").textContent = "訂正の理由を入力してください"; $("c-reason").focus(); return; }
     body.reason = reason;
     $("c-status").textContent = "再計算中…";
+    if (!viewingLatest) { $("c-status").textContent = "過去の版は訂正できません"; return; }
     try {
       const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections", body);
-      const keep = PC.view(model, state).frameId;
-      current = await api("GET", "/api/videos/" + current.video.id);
-      renderHistory();
-      model = PC.loadSnapshot(snap);
-      state = PC.seekFrameId(model, PC.setRate(PC.createState(), state.rate), keep);
-      selectedEvent = null;
-      renderQuality(); renderEvents(); renderMetrics(); render();
+      await afterCorrection(snap);
       $("c-status").textContent = "訂正を保存し、依存する指標を計算し直しました";
     } catch (err) { $("c-status").textContent = "訂正できませんでした: " + err.message; }
+  }
+
+  async function afterCorrection(snap) {
+    const keep = PC.view(model, state).frameId;
+    current = await api("GET", "/api/videos/" + current.video.id);
+    renderHistory();
+    viewingLatest = true;
+    model = PC.loadSnapshot(snap);
+    state = PC.seekFrameId(model, PC.setRate(PC.createState(), state.rate), keep);
+    selectedEvent = null;
+    renderTitle();
+    renderQuality(); renderEvents(); renderMetrics(); renderCorrections(); render();
   }
 
   // ---------- 描画 ----------
@@ -511,8 +571,9 @@
       ["欠落の疑い", (q.gap_frame_ids || []).length + " 箇所"],
       ["復号失敗", c.decode_check === "packets" ? (c.decode_failed_source_frame_ids || []).length + " 枚" : "確認できない"],
       ["観測の途切れ", ((s.events && s.events.observation_breaks) || []).length + " 箇所（またいだ指標は出さない）"],
-      ["解析フレーム", (c.analyzed_frame_count ?? "—") + " / " + (c.decoded_frame_count ?? "—") + "（人物を検出できない " + (c.pose_failed_frame_ids || []).length + "）"],
-      ["地面の線", groundLabel(s.ground_estimate)],
+      ["解析フレーム", (c.analyzed_frame_count ?? "—") + " / " + (c.decoded_frame_count ?? "—")],
+      ["人物を検出できない", (c.unobservable_frame_ids || []).length + " フレーム（取り直し " + (c.reacquired_frame_ids || []).length + " 回）"],
+      ["地面の線", groundLabel(s.ground_estimate) + ((s.ground_quality && s.ground_quality.problems && s.ground_quality.problems.length) ? "／問題: " + s.ground_quality.problems.join("、") : "")],
       ["モデル", s.model ? s.model.weights_version : "—"],
       ["モード", s.preview ? "プレビュー（" + (s.preview_reason || "") + "）" : "精度優先・全原本フレーム"],
       ["解析ID", (s.analysis_id || "").slice(0, 12) + (s.revision ? "（版 " + s.revision + "）" : "")],
@@ -562,9 +623,11 @@
         $("rate-select").value = String(state.rate);
         render();
       }));
-      td.appendChild(button("表示中のフレームへ移す", () => correct({ action: "move", event_id: e.event_id,
-                                                                        after_frame_id: PC.view(model, state).frameId })));
-      td.appendChild(button("削除", () => correct({ action: "delete", event_id: e.event_id }), "danger"));
+      if (viewingLatest) {
+        td.appendChild(button("表示中のフレームへ移す", () => correct({ action: "move", event_id: e.event_id,
+                                                                          after_frame_id: PC.view(model, state).frameId })));
+        td.appendChild(button("削除", () => correct({ action: "delete", event_id: e.event_id }), "danger"));
+      }
       tr.appendChild(td);
       tr.addEventListener("click", (ev) => { if (ev.target.tagName !== "BUTTON") { selectedEvent = e.event_id; renderEvents(); } });
       body.appendChild(tr);

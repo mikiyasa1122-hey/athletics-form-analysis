@@ -2,7 +2,7 @@
   "run_id": "20261118-2032-functional-app",
   "title": "functional-app",
   "status": "in_progress",
-  "phase": "04_gate",
+  "phase": "05_fix",
   "created": "2026-11-18T20:32:10+09:00",
   "awaiting_human": false,
   "question": "",
@@ -29,6 +29,17 @@
               "id": "V1",
               "method": "拡張子・種目・日付・未知項目の検証、失敗時に残骸なし",
               "command": "python3 -m unittest tests.test_server.ServerTest.test_upload_validation"
+            }
+          ]
+        },
+        {
+          "id": "K23",
+          "text": "強制終了したアップロードの残骸が残る（レビュー N7）",
+          "verifications": [
+            {
+              "id": "V26",
+              "method": "起動時に DB に行のないフォルダを消す",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_orphan_folders_cleaned_on_start"
             }
           ]
         }
@@ -69,6 +80,17 @@
               "id": "V4",
               "method": "app.js が innerHTML 等を使わず、参照IDがHTMLにある",
               "command": "node --test web/tests/static.test.js"
+            }
+          ]
+        },
+        {
+          "id": "K22",
+          "text": "tests の大文字小文字すり抜け・負の Content-Length・配列 JSON・NaN の地面・CORP なし（レビュー N6/N7/N9/N10）",
+          "verifications": [
+            {
+              "id": "V25",
+              "method": "入力の検査と許可リスト",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_input_hardening"
             }
           ]
         }
@@ -135,6 +157,28 @@
               "command": "python3 -m unittest tests.test_realpose.MappingTest"
             }
           ]
+        },
+        {
+          "id": "K18",
+          "text": "追跡が別人に乗り移り、その印も残らない（レビュー B4）",
+          "verifications": [
+            {
+              "id": "V21",
+              "method": "範囲を広げない・大きさの違う人を選ばない・取り直しに印",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            }
+          ]
+        },
+        {
+          "id": "K19",
+          "text": "取り直しの前後をつないでイベントを作る（レビュー B4）",
+          "verifications": [
+            {
+              "id": "V22",
+              "method": "取り直しフレームで観測を区切る",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest.test_reacquired_frame_breaks_observation"
+            }
+          ]
         }
       ]
     },
@@ -156,6 +200,28 @@
               "id": "V11",
               "method": "アップロードから解析・地面の推定・接地時間が真値を含む",
               "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        },
+        {
+          "id": "K20",
+          "text": "自動推定の地面が誤っていても指標が valid（レビュー B5）",
+          "verifications": [
+            {
+              "id": "V23",
+              "method": "自動推定では valid が出ず、手動指定で valid",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_auto_ground_caps_valid"
+            }
+          ]
+        },
+        {
+          "id": "K21",
+          "text": "カメラの動き・小さい人物を地面の質に反映しない（レビュー B5）",
+          "verifications": [
+            {
+              "id": "V24",
+              "method": "地面の高さが時間でずれる・人物が小さいと問題として返す",
+              "command": "python3 -m unittest tests.test_realpose.GroundTest.test_quality_problems_reported"
             }
           ]
         }
@@ -212,6 +278,28 @@
               "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
             }
           ]
+        },
+        {
+          "id": "K15",
+          "text": "保存済みの訂正が、地面の変更・再推論のあとの再解析を恒久的に失敗させる（レビュー B1）",
+          "verifications": [
+            {
+              "id": "V18",
+              "method": "訂正→地面の変更→再解析が完了し、未適用の訂正が記録され、取り消せる",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_correction_survives_ground_change_and_can_be_revoked"
+            }
+          ]
+        },
+        {
+          "id": "K17",
+          "text": "再解析で既存のスナップショットが書き換わる（レビュー B3）",
+          "verifications": [
+            {
+              "id": "V20",
+              "method": "同じ入力の再解析で前の版のファイルが変わらず、版が増える",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_reanalysis_never_overwrites_versions"
+            }
+          ]
         }
       ]
     },
@@ -248,6 +336,17 @@
               "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
             }
           ]
+        },
+        {
+          "id": "K16",
+          "text": "解析中に削除すると、姿勢データとフレーム画像が残る（レビュー B2）",
+          "verifications": [
+            {
+              "id": "V19",
+              "method": "解析中の削除は 409",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_duplicate_job_rejected_and_cancel"
+            }
+          ]
         }
       ]
     },
@@ -271,12 +370,209 @@
     }
   ],
   "review": {
-    "done": false,
-    "blocking_findings": 0,
-    "summary": ""
+    "done": true,
+    "blocking_findings": 5,
+    "summary": "fix_required: B1 保存済み訂正が再解析を恒久的に失敗させる, B2 解析中の削除で残骸, B3 再解析でスナップショット上書き(不変性違反), B4 追跡の乗り移りに印なし, B5 自動推定の地面の質が指標の状態に反映されない。N1-N10（取消競合、訂正のロック、検出不可の件数、版と表示の食い違い、復号照合の端、tests大文字、タイムアウト/負のContent-Length、トレースバック露出、ground_overrideの値検査、CORP）。実映像（Athletissima）でも B4/B5 を確認: 地面は接地点2つ・傾き上限、イベント2つ、角度が valid"
   },
   "memory_done": false,
-  "fix_iterations": 0,
-  "gate": null,
+  "fix_iterations": 1,
+  "gate": {
+    "ran_at": "2026-11-18T21:25:24+09:00",
+    "finished_epoch": 1795004724.3801324,
+    "stamp": "20261118-212423",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.32,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.16,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 22.52,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.85,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-check-test-js.log"
+        },
+        "real-ffprobe": {
+          "pass": true,
+          "exit": 0,
+          "sec": 4.0,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-check-real-ffprobe.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.02,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V1.log"
+        },
+        "V26": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.0,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V26.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.04,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.02,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V3.log"
+        },
+        "V4": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.2,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V4.log"
+        },
+        "V25": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.05,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V25.log"
+        },
+        "V5": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.07,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V5.log"
+        },
+        "V6": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.02,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V6.log"
+        },
+        "V7": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.84,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V7.log"
+        },
+        "V8": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V8.log"
+        },
+        "V9": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V9.log"
+        },
+        "V21": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V21.log"
+        },
+        "V22": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.38,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V22.log"
+        },
+        "V10": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.41,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V10.log"
+        },
+        "V11": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.84,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V11.log"
+        },
+        "V23": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.73,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V23.log"
+        },
+        "V24": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V24.log"
+        },
+        "V12": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.59,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V12.log"
+        },
+        "V13": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.58,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V13.log"
+        },
+        "V14": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.83,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V14.log"
+        },
+        "V18": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.94,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V18.log"
+        },
+        "V20": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.76,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V20.log"
+        },
+        "V15": {
+          "pass": true,
+          "exit": 0,
+          "sec": 2.15,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V15.log"
+        },
+        "V16": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.79,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V16.log"
+        },
+        "V19": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.12,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V19.log"
+        },
+        "V17": {
+          "pass": true,
+          "exit": 0,
+          "sec": 4.81,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261118-212423-verify-V17.log"
+        }
+      }
+    }
+  },
   "stop_blocks": 0
 }

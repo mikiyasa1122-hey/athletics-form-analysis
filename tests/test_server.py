@@ -58,6 +58,7 @@ class ServerTest(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        self.srv.app.jobs.wait_idle(10)   # 実行中のジョブが閉じた DB に書かないように
         self.srv.shutdown()
         self.srv.server_close()
         self.srv.app.store.close()
@@ -230,7 +231,9 @@ class ServerTest(unittest.TestCase):
         s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "full"})
         jid = b["job"]["id"]
         s2, b2, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "full"})
-        self.assertEqual(s2, 400)   # 同じ動画の二重実行は拒否
+        self.assertEqual(s2, 409)   # 同じ動画の二重実行は拒否
+        s3, _, _ = self.req("DELETE", f"/api/videos/{vid}", {})
+        self.assertEqual(s3, 409)   # 解析中の削除は拒否（レビュー B2）
         s, b, _ = self.req("POST", f"/api/jobs/{jid}/cancel", {})
         self.assertIn(b["job"]["state"], ("cancel_requested", "cancelled"))
         gate.set()
@@ -245,6 +248,106 @@ class ServerTest(unittest.TestCase):
         vid = self.upload()[1]["video"]["id"]
         s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "reanalyze"})
         self.assertEqual(s, 400)
+
+    def test_correction_survives_ground_change_and_can_be_revoked(self):
+        # レビュー B1: 訂正の後に地面を変えて再解析しても失敗せず、当てられない訂正は「未適用」として残る
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        toe = next(e for e in snap["events"]["auto"] if e["event_type"] == "toe_off")
+        s, snap2, _ = self.req("POST", f"/api/videos/{vid}/corrections",
+                               {"action": "delete", "event_id": toe["event_id"], "reason": "誤検出"})
+        self.assertEqual(s, 200)
+        g = snap["detector"]
+        s, _, _ = self.req("PATCH", f"/api/videos/{vid}", {"ground_override": {
+            "ground_y": g["ground_y"] + 20, "contact_band_px": g["contact_band_px"]}})
+        self.assertEqual(s, 200)
+        s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "reanalyze"})
+        jid = b["job"]["id"]
+        for _ in range(200):
+            j = self.req("GET", f"/api/jobs/{jid}")[1]["job"]
+            if j["state"] in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        self.assertEqual(j["state"], "completed", j)
+        snap3 = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertEqual(len(snap3["events"]["unapplied_corrections"]), 1)
+        self.assertEqual(snap3["ground_quality"]["method"], "user_override")
+        # 取り消し: 記録は残り、取り消し日時と理由が付く
+        s, snap4, _ = self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {"reason": "地面を直したので不要"})
+        self.assertEqual(s, 200, snap4)
+        self.assertEqual(snap4["events"]["unapplied_corrections"], [])
+        corrs = self.req("GET", f"/api/videos/{vid}")[1]["corrections"]
+        self.assertEqual(len(corrs), 1)
+        self.assertTrue(corrs[0]["revoked_at"])
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {"reason": "x"})[0], 404)
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {})[0], 400)   # 理由が必要
+
+    def test_reanalysis_never_overwrites_versions(self):
+        # レビュー B3: 同じ入力での再解析でも、前の版のファイルは変わらず、版が増える
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        path = os.path.join(self.tmp.name, "videos", vid, "analyses", "r1.json")
+        with open(path, "rb") as fh:
+            before = fh.read()
+        self.req("PATCH", f"/api/videos/{vid}", {"notes": "変更", "practice_date": "2020-01-01"})
+        s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "reanalyze"})
+        for _ in range(200):
+            if self.req("GET", f"/api/jobs/{b['job']['id']}")[1]["job"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        versions = self.req("GET", f"/api/videos/{vid}")[1]["analyses"]
+        self.assertEqual([v["revision"] for v in versions], [2, 1])
+        self.assertEqual(versions[0]["analysis_id"], versions[1]["analysis_id"])   # 同じ入力なら同じ ID（再現性）
+        r1 = self.req("GET", f"/api/videos/{vid}/analysis?revision=1")[1]
+        self.assertEqual(r1["revision"], 1)
+
+    def test_auto_ground_caps_valid(self):
+        # レビュー B5: 地面の線が自動推定なら valid は出ない。手動で指定すると valid を出せる
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertEqual(snap["ground_quality"]["method"], "auto")
+        self.assertTrue(all(m["status"] != "valid" for m in snap["metrics"]))
+        g = snap["detector"]
+        self.req("PATCH", f"/api/videos/{vid}", {"ground_override": {"ground_y": g["ground_y"],
+                                                                      "contact_band_px": g["contact_band_px"]}})
+        s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "reanalyze"})
+        for _ in range(200):
+            if self.req("GET", f"/api/jobs/{b['job']['id']}")[1]["job"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        snap2 = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertTrue(any(m["status"] == "valid" for m in snap2["metrics"]))
+
+    def test_input_hardening(self):
+        # レビュー N6・N7・N9
+        self.assertEqual(self.req("GET", "/TESTS/static.test.js")[0], 404)
+        self.assertEqual(self.req("GET", "/README.md")[0], 404)
+        vid = self.upload()[1]["video"]["id"]
+        s, _, _ = self.req("PATCH", f"/api/videos/{vid}", raw=b"[1,2]",
+                           headers={"Content-Type": "application/json", "Content-Length": "5"})
+        self.assertEqual(s, 400)
+        for bad in ({"ground_y": float("nan")}, {"ground_y": 10, "contact_band_px": -1},
+                    {"ground_y": 10, "ground_slope": 5}):
+            with self.subTest(bad=bad):
+                s, _, _ = self.req("PATCH", f"/api/videos/{vid}", raw=json.dumps({"ground_override": bad}).encode(),
+                                   headers={"Content-Type": "application/json"})
+                self.assertEqual(s, 400)
+        s, _, r = self.req("GET", "/")
+        self.assertEqual(r.getheader("Cross-Origin-Resource-Policy"), "same-origin")
+
+    def test_orphan_folders_cleaned_on_start(self):
+        orphan = os.path.join(self.tmp.name, "videos", "abcdefabcdef")
+        os.makedirs(orphan)
+        from athform.server import make_server
+        srv2 = make_server(self.tmp.name, 0, pose_fn=fake_pose_fn, ffprobe_runner=fake_probe_factory(self.spec))
+        self.assertFalse(os.path.exists(orphan))
+        srv2.app.jobs.wait_idle(5)
+        srv2.server_close()
+        srv2.app.store.close()
 
     def test_static_index(self):
         s, body, r = self.req("GET", "/")

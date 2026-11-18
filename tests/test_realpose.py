@@ -24,24 +24,45 @@ class TrackingTest(unittest.TestCase):
     def test_first_frame_picks_largest(self):
         st = TrackState()
         people = [person(100, 100, 50), person(400, 300, 200), person(700, 300, 80)]
-        self.assertEqual(choose_target(people, st, 0.3), 1)
+        self.assertEqual(choose_target(people, st, 0.3), (1, False))
 
     def test_follows_nearest_not_largest(self):
         st = TrackState()
         choose_target([person(400, 300, 100)], st, 0.3)
         # 次のフレームで、もっと大きい人が遠くに現れても、近くの同じ人を追う
-        idx = choose_target([person(900, 300, 300), person(420, 305, 100)], st, 0.3)
-        self.assertEqual(idx, 1)
+        self.assertEqual(choose_target([person(900, 300, 300), person(420, 305, 100)], st, 0.3), (1, False))
 
     def test_jump_is_lost_not_switched(self):
         st = TrackState()
         choose_target([person(400, 300, 100)], st, 0.3)
-        self.assertIsNone(choose_target([person(1200, 300, 100)], st, 0.3))   # 別人に乗り移らない
+        self.assertEqual(choose_target([person(1200, 300, 100)], st, 0.3), (None, False))   # 別人に乗り移らない
         self.assertEqual(st.lost, 1)
 
     def test_low_confidence_ignored(self):
         st = TrackState()
-        self.assertIsNone(choose_target([person(400, 300, 100, score=0.1)], st, 0.3))
+        self.assertEqual(choose_target([person(400, 300, 100, score=0.1)], st, 0.3), (None, False))
+
+    def test_gate_does_not_widen_while_lost(self):
+        # レビュー B4: 見失っている間に受け入れる範囲を広げない。300px 先の別人を8フレーム後に選ばない
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3)
+        for _ in range(8):
+            self.assertEqual(choose_target([], st, 0.3), (None, False))
+        self.assertEqual(choose_target([person(700, 300, 100)], st, 0.3), (None, False))
+
+    def test_different_size_neighbor_rejected(self):
+        # 本人が隠れた1フレームに、近くの大きさの違う人（手前のレーン）がいても乗り移らない
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3)
+        self.assertEqual(choose_target([person(430, 330, 180)], st, 0.3), (None, False))
+
+    def test_reacquire_is_marked(self):
+        # 長く見失った後に選び直したら「取り直し」と印を付ける（解析ではそこで区切る）
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3)
+        for _ in range(15):
+            choose_target([], st, 0.3)
+        self.assertEqual(choose_target([person(900, 300, 120)], st, 0.3), (0, True))
 
 
 class MappingTest(unittest.TestCase):
@@ -84,6 +105,22 @@ class GroundTest(unittest.TestCase):
         self.assertAlmostEqual(cfg.ground_slope, 0.05, delta=0.01)
         for x in (250, 1000):
             self.assertAlmostEqual(cfg.ground_y + cfg.ground_slope * (x - cfg.ground_x0), GROUND_Y + 0.05 * x, delta=4)
+
+    def test_quality_problems_reported(self):
+        # レビュー B5: 自動推定の地面を信用できない理由（カメラの動き・小さい人物）を返す
+        ok_cfg, ok = estimate_ground(self.frames())
+        self.assertEqual(ok["problems"], [])
+        drifting = {}
+        for i, pf in self.frames().items():   # 時間とともに地面が下がる（カメラが上を向いていく）
+            shift = 0.4 * i
+            drifting[i] = PoseFrame(i, {k: (None if v is None else Keypoint(v.x, v.y + shift, v.confidence))
+                                         for k, v in pf.keypoints.items()}, [])
+        _, diag = estimate_ground(drifting)
+        self.assertTrue(any("カメラが動いている" in p for p in diag["problems"]))
+        small = {i: PoseFrame(i, {k: (None if v is None else Keypoint(v.x * 0.15, v.y * 0.15, v.confidence))
+                                  for k, v in pf.keypoints.items()}, []) for i, pf in self.frames().items()}
+        _, diag = estimate_ground(small)
+        self.assertTrue(any("人物が小さい" in p for p in diag["problems"]))
 
     def test_no_feet_raises(self):
         empty = {i: PoseFrame(i, {k: None for k in KEYPOINTS}, ["no_person"]) for i in range(50)}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import threading
 import traceback
 from typing import Any, Callable
@@ -79,10 +80,10 @@ class JobRunner:
             return job
         with self._lock:
             self._cancel.add(job_id)
-        if job["state"] == "queued":
-            self.store.update_job(job_id, state="cancelled", message="取り消した")
-        else:
-            self.store.update_job(job_id, state="cancel_requested", message="取り消し中")
+        # 読んだ後にジョブが終わっていても上書きしないよう、状態を条件に変える（レビュー N1）
+        if not self.store.transition_job(job_id, "cancelled", ("queued",), message="取り消した"):
+            self.store.transition_job(job_id, "cancel_requested", ("probing", "inferring", "analyzing"),
+                                      message="取り消し中")
         return self.store.get_job(job_id)
 
     def wait_idle(self, timeout: float = 30) -> None:
@@ -104,7 +105,16 @@ class JobRunner:
             try:
                 self._run(jid)
             except Exception:   # noqa: BLE001  （想定外の例外もジョブの失敗として記録し、ワーカーは止めない）
-                self.store.update_job(jid, state="failed", error="想定外のエラー", message=traceback.format_exc()[-800:])
+                # 詳細（ローカルのパスを含む）は画面に出さず、サーバーのコンソールにだけ出す（レビュー N8）
+                sys.stderr.write(traceback.format_exc())
+                try:
+                    self.store.update_job(jid, state="failed", error="想定外のエラー（詳細はサーバーのコンソール）",
+                                          message="解析できなかった")
+                except Exception:   # noqa: BLE001
+                    pass
+            finally:
+                with self._lock:
+                    self._cancel.discard(jid)
 
     def _cancelled(self, jid: str) -> bool:
         with self._lock:
@@ -117,7 +127,8 @@ class JobRunner:
 
     def _run(self, jid: str) -> None:
         job = self.store.get_job(jid)
-        if job["state"] == "cancelled":
+        if job["state"] in ("cancelled", "cancel_requested"):
+            self.store.transition_job(jid, "cancelled", ("cancel_requested",), message="取り消した")
             return
         try:
             video = self.store.get_video(job["video_id"])
@@ -148,20 +159,24 @@ class JobRunner:
                 self.store.write_json(vid, "pose.json", pose_to_json(res.model, res.frames, res.image_size,
                                                                       res.view_scale, res.failed))
             self._set(jid, "analyzing", 0.96, "指標を計算中")
-            snapshot = self.analyze_video(vid, mode=job["mode"])
-            self.store.update_job(jid, state="completed", progress=1.0, message="完了",
-                                  error=None)
-            del snapshot
+            self.analyze_video(vid, mode=job["mode"])
+            self.store.update_job(jid, state="completed", progress=1.0, message="完了", error=None)
         except Cancelled:
             self.store.update_job(jid, state="cancelled", message="取り消した")
+        except NotFound:
+            self.store.update_job(jid, state="failed", error="動画が削除された", message="解析できなかった")
         except (TimebaseError, PoseRunError, AnalysisError, CorrectionError, ValueError) as exc:
             self.store.update_job(jid, state="failed", error=str(exc), message="解析できなかった")
         finally:
             with self._lock:
                 self._cancel.discard(jid)
 
-    def analyze_video(self, vid: str, mode: str = "performance") -> dict[str, Any]:
-        """保存済みの probe と姿勢推定から解析し、新しいスナップショットとして保存する。"""
+    def analyze_video(self, vid: str, mode: str = "performance", require_last_correction: bool = False) -> dict[str, Any]:
+        """保存済みの probe と姿勢推定から解析し、新しい版として保存する。
+
+        保存済みの訂正のうち、自動イベントが変わって当てられないものは失敗にせず「未適用」として版に残す（レビュー B1）。
+        require_last_correction=True（訂正を追加した直後）では、追加した訂正が当てられなければエラーにする。
+        """
         video = self.store.get_video(vid)
         probe = self.store.read_json(vid, "probe.json")
         pose = self.store.read_json(vid, "pose.json")
@@ -176,32 +191,40 @@ class JobRunner:
             detector = DetectorConfig(ground_y=float(g["ground_y"]), contact_band_px=float(g.get("contact_band_px", 6)),
                                       min_confidence=min_conf, ground_slope=float(g.get("ground_slope", 0)),
                                       ground_x0=float(g.get("ground_x0", 0)))
-            ground_diag = {"method": "user_override"}
+            ground_diag: dict[str, Any] = {"method": "user_override"}
+            ground_quality = {"method": "user_override", "problems": []}
         else:
             try:
                 detector, ground_diag = estimate_ground(frames, min_conf)
+                ground_quality = {"method": "auto", "problems": list(ground_diag.get("problems", []))}
             except PoseRunError as exc:
                 # 人物（足）が十分に見えない。接地は判定できないので、地面を画面の外に置いてイベントを作らない。
                 # 解析自体は保存し、フレームと「なぜ出せないか」を画面で確かめられるようにする
                 height = float((pose.get("image_size") or [0, 1e6])[1]) * 10 + 1e6
                 detector = DetectorConfig(ground_y=height, min_confidence=min_conf)
                 ground_diag = {"method": "unavailable", "reason": str(exc)}
+                ground_quality = {"method": "unavailable", "problems": [str(exc)]}
         conditions = CaptureConditions(camera_view=video["camera_view"] or None,
                                        direction=video["direction"] or None,
                                        discipline=video["discipline"])
-        corrections = [Correction.from_json(c) for c in self.store.read_json(vid, "corrections.json", [])]
-        inp = AnalysisInput(video["sha256"], index, StoredPoseAdapter(model, frames), detector, conditions)
+        stored = self.store.read_json(vid, "corrections.json", [])
+        corrections = [Correction.from_json(c) for c in stored]
+        inp = AnalysisInput(video["sha256"], index, StoredPoseAdapter(model, frames), detector, conditions,
+                            strict_corrections=False, ground_quality=ground_quality)
         mode = str(model.config.get("mode", mode))   # 姿勢を推定したときのモードを使う
         if mode != "performance":
             inp.preview_reason = "軽量モデル（balanced）での解析。正式な計測には精度優先モードを使う"
         snap = analyze(inp, corrections)
+        if require_last_correction and stored:
+            last = len(stored) - 1
+            for u in snap["events"]["unapplied_corrections"]:
+                if u["index"] == last:
+                    raise CorrectionError(u["reason"])
         snap["frame_images"] = {"url": f"/api/videos/{vid}/frames/", "ext": "jpg",
                                 "image_size": pose.get("image_size"), "view_scale": pose.get("view_scale", 1.0)}
         snap["ground_estimate"] = ground_diag
         snap["video"] = {"id": vid, "filename": video["filename"], "practice_date": video["practice_date"],
                          "discipline_name": disciplines.get(video["discipline"]).name}
         snap["analysis_mode"] = mode
-        revision = len(self.store.list_analyses(vid)) + 1
-        snap["revision"] = revision
-        self.store.save_analysis(vid, snap, mode, revision)
+        self.store.save_analysis(vid, snap, mode)
         return snap

@@ -45,6 +45,9 @@ class AnalysisInput:
     conditions: CaptureConditions
     sampling: SamplingPolicy = field(default_factory=SamplingPolicy)
     preview_reason: str = ""   # 軽量モデルなど、正式な精密指標として出さない理由（ARCH-014）
+    strict_corrections: bool = True   # False: 当てられない保存済みの訂正を「未適用」として記録して続ける
+    # 地面の線の出どころと問題点。自動推定なら最高でも estimated、問題があれば review_required（レビュー B5）
+    ground_quality: dict[str, Any] = field(default_factory=lambda: {"method": "given", "problems": []})
 
 
 def _select_frames(inp: AnalysisInput) -> list[int]:
@@ -96,6 +99,10 @@ def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:
         "selected_frame_count": len(selected),
         "analyzed_frame_count": len(poses),
         "pose_failed_frame_ids": failed,
+        # 推定はしたが、対象の人物を検出できなかった・見失った・取り直したフレーム（レビュー N3）
+        "unobservable_frame_ids": [fid for fid, p in sorted(poses.items())
+                                   if {"no_person", "tracking_lost", "occluded"} & set(p.flags)],
+        "reacquired_frame_ids": [fid for fid, p in sorted(poses.items()) if "reacquired" in p.flags],
         "skipped_by_sampling": total - len(selected),
     }
     return poses, completeness
@@ -112,7 +119,7 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
                     else _subindex(work_index, _select_frames(inp)))
     detection = detect_events(timing_index, poses, inp.detector)
     layers = EventLayers(detection.events, list(corrections or []))
-    effective = layers.effective(timing_index, detection.breaks)
+    effective = layers.effective(timing_index, detection.breaks, strict=inp.strict_corrections)
 
     # 動画時間で見た動きの速さが種目として不自然 → スロー書き出しを疑い、実時間指標を出さない（AC-015）
     # 接地時間かピッチのどちらかが出せる素材なら、必ずこのチェックを通る（値が出るのに未確認、はない）
@@ -132,6 +139,7 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
         cap_for_preview(metrics)
     if inp.preview_reason:
         cap_for_preview(metrics, inp.preview_reason)
+    apply_ground_quality(metrics, inp.ground_quality)
     if inp.index.decode_check != "packets":
         for m in metrics:
             m.limitations.append("パケット情報がなく、復号できなかったフレームの有無を確認できない")
@@ -144,6 +152,7 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
         "model": inp.pose.model.to_json(),
         "detector": inp.detector.to_json(),
         "capture_conditions": inp.conditions.to_json(),
+        "ground_quality": inp.ground_quality,
         "discipline": disciplines.get(inp.conditions.discipline).to_json(),
         "feedback": {"findings": [], "reason": "評価ルールが専門家に承認されていないため、改善提案は出さない（FR-FB-001, §8.3）"},
         "analysis_sampling_policy": inp.sampling.to_json(),
@@ -157,6 +166,7 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
         "events": {
             "auto": [e.to_json() for e in auto_events],
             "corrections": [c.to_json() for c in layers.corrections],
+            "unapplied_corrections": layers.unapplied,
             "effective": [e.to_json() for e in effective],
             "observation_breaks": [b.to_json() for b in detection.breaks],
         },
@@ -164,6 +174,23 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
     }
     body["analysis_id"] = snapshot_hash(body)
     return body
+
+
+def apply_ground_quality(metrics: list[MetricResult], gq: dict[str, Any]) -> None:
+    """接地の判定は地面の線に依存する。全指標が接地イベントを根拠にするので、地面の質で状態の上限を決める。"""
+    from .metrics import ESTIMATED, REVIEW, UNAVAILABLE, VALID, worse  # noqa: PLC0415
+    method = gq.get("method")
+    problems = list(gq.get("problems") or [])
+    for m in metrics:
+        if m.status == UNAVAILABLE:
+            continue
+        if problems:
+            m.status = worse(m.status, REVIEW)
+            m.reasons += [f"地面の線: {p}" for p in problems]
+        elif method == "auto":
+            if m.status == VALID:
+                m.status = ESTIMATED
+            m.limitations.append("地面の線は自動推定（画面で確かめて指定すると、確かな値として扱える）")
 
 
 def snapshot_hash(body: dict[str, Any]) -> str:

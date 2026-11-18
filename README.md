@@ -28,7 +28,7 @@ python -m venv .venv
 .venv/Scripts/python -m athform.server
 ```
 
-ブラウザで http://127.0.0.1:8766/ を開きます。データは `data/` に保存されます（コミットされません）。
+ブラウザで http://127.0.0.1:8766/ を開きます。データ（元動画・フレーム画像・解析結果）はホームフォルダの `.athform/data` に保存されます（プロジェクトの外。`--data` または環境変数 `ATHFORM_DATA` で変えられます）。
 初回の解析で、姿勢推定モデルの重み（約750MB、OpenMMLab 配布）が `~/.cache/rtmlib` にダウンロードされます。
 
 ### 使い方
@@ -107,4 +107,4 @@ python -m athform demo --out web/demo
 
 ## 動作確認に使った動画
 
-- 「100 m female Athletissima 2012」— 作者: Fanny（Wikimedia Commons: User:Inisheer）、ライセンス: CC BY 3.0、出典: https://commons.wikimedia.org/wiki/File:100_m_female_Athletissima_2012.ogv 。リポジトリには含めていません（ローカルの `data/` で使用）
+- 「100 m female Athletissima 2012」— 作者: Fanny（Wikimedia Commons: User:Inisheer）、ライセンス: CC BY 3.0、出典: https://commons.wikimedia.org/wiki/File:100_m_female_Athletissima_2012.ogv 。リポジトリには含めていません
