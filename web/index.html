@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>フォーム解析ビューア</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>フォーム解析ビューア</h1>
+    <div class="loaders">
+      <label>デモ
+        <select id="demo-select" aria-label="デモ解析を選ぶ"></select>
+      </label>
+      <label class="file">解析結果JSONを開く
+        <input id="file-input" type="file" accept="application/json,.json">
+      </label>
+    </div>
+  </header>
+
+  <p id="load-error" class="error" role="alert" hidden></p>
+
+  <main class="layout">
+    <section class="player" aria-label="プレイヤー">
+      <canvas id="stage" width="1280" height="1000" aria-label="骨格の表示"></canvas>
+
+      <div class="readout" aria-live="polite">
+        <div><span class="k">原本フレームID</span><span id="ro-frame" class="v mono"></span></div>
+        <div><span class="k">PTS / time_base</span><span id="ro-pts" class="v mono"></span></div>
+        <div><span class="k">元動画時刻</span><span id="ro-time" class="v mono"></span></div>
+        <div><span class="k">再生の経過時間（表示上）</span><span id="ro-elapsed" class="v mono"></span></div>
+        <div><span class="k">骨格のフレームID</span><span id="ro-overlay" class="v mono"></span></div>
+        <div><span class="k">このフレームのイベント</span><span id="ro-events" class="v"></span></div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-prev" type="button" title="1フレーム戻る（←）">◀ 1</button>
+        <button id="btn-play" type="button" title="再生 / 一時停止（Space）">再生</button>
+        <button id="btn-next" type="button" title="1フレーム進む（→）">1 ▶</button>
+        <label>再生倍率
+          <select id="rate-select" aria-label="再生倍率"></select>
+        </label>
+        <input id="scrubber" type="range" min="0" max="0" value="0" aria-label="原本フレーム位置">
+        <button id="btn-unloop" type="button" hidden>ループ解除</button>
+      </div>
+      <p class="note">再生倍率は表示の速さだけを変えます。元動画時刻・フレームID・解析値は変わりません。</p>
+    </section>
+
+    <aside class="quality" aria-label="撮影と時間軸の品質">
+      <h2>撮影・時間軸</h2>
+      <dl id="quality-list"></dl>
+      <ul id="quality-notes" class="notes"></ul>
+    </aside>
+
+    <section class="events" aria-label="イベント">
+      <h2>イベント（接地・離地）</h2>
+      <table>
+        <thead><tr><th>種類</th><th>足</th><th>時刻区間（元動画）</th><th>挟むフレーム</th><th>状態</th><th></th></tr></thead>
+        <tbody id="events-body"></tbody>
+      </table>
+    </section>
+
+    <section class="metrics" aria-label="指標">
+      <h2>指標</h2>
+      <table>
+        <thead><tr><th>指標</th><th>足</th><th>値</th><th>状態</th><th>理由・制約</th><th>根拠</th></tr></thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="player-core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

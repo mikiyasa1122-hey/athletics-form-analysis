@@ -28,6 +28,7 @@ CAPTURE_FPS_TAGS = ("com.android.capture.fps",)
 GAP_FACTOR = Fraction(3, 2)      # 中央値間隔の1.5倍を超えたら欠落の疑い
 VFR_TOLERANCE = Fraction(2, 100)  # 間隔のばらつきが中央値の2%を超えたらVFR
 FPS_MATCH_TOLERANCE = Fraction(5, 100)
+CONTAINER_ASSUMPTION_NOTE = "撮影メタデータなし。コンテナPTSを実時間とみなしている（仮定）"
 
 
 class TimebaseError(ValueError):
@@ -281,11 +282,13 @@ def _resolve_capture_time(index: FrameIndex, probe: dict[str, Any], stream: dict
         return
 
     index.capture_time_status = CONTAINER_ONLY
-    notes.append("撮影メタデータなし。コンテナPTSを実時間とみなしている（仮定）")
+    notes.append(CONTAINER_ASSUMPTION_NOTE)
 
 
 def downgrade_capture_time(index: FrameIndex, reason: str) -> None:
     """解析中に見つかった矛盾（例: 種目として不自然に遅い動作）で確度を下げる。"""
     if index.capture_time_status in (CONTAINER_ONLY, DECLARED):
         index.capture_time_status = SLOWMO_SUSPECTED
+        # 「PTSを実時間とみなす」仮定は撤回されたので、その注記を残さない
+        index.capture_time_notes[:] = [n for n in index.capture_time_notes if n != CONTAINER_ASSUMPTION_NOTE]
         index.capture_time_notes.append(reason)

@@ -40,7 +40,6 @@
   "capture_fps": null,
   "capture_time_status": "slowmo_suspected",
   "capture_time_notes": [
-   "撮影メタデータなし。コンテナPTSを実時間とみなしている（仮定）",
    "動画時間上のピッチ 0.57 歩/秒 が sprint_100m として不自然に低い（下限 2.0）。スロー書き出しの疑い"
   ],
   "interval_s": {
@@ -24337,6 +24336,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "d82b41efbad8d07eb2352f27f9c11e65cdf1c19c894b78d9b7919d8e27bd73a7",
+ "analysis_id": "39babcba241d330675301ef8c046918ad53abf734ff22ea7d24e75fba88cbc83",
  "demo_label": "240fps撮影を30fpsタイムラインに書き出したスロー動画（メタデータなし）"
 }

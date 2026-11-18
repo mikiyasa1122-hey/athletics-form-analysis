@@ -37,7 +37,9 @@ class PlausibilityTest(unittest.TestCase):
     def test_untagged_slowmo_blocked_by_plausibility(self):
         snap = run(CaptureSpec(capture_fps=240, container_time_scale=8.0))
         self.assertEqual(snap["capture_quality"]["capture_time_status"], "slowmo_suspected")
-        self.assertTrue(any("スロー書き出しの疑い" in n for n in snap["capture_quality"]["capture_time_notes"]))
+        notes = snap["capture_quality"]["capture_time_notes"]
+        self.assertTrue(any("スロー書き出しの疑い" in n for n in notes))
+        self.assertFalse(any("実時間とみなしている" in n for n in notes))  # 撤回された仮定を残さない
         for m in time_metrics(snap):
             self.assertEqual(m["status"], "unavailable")
         # 画像平面の角度は時間軸に依存しないので算出できる
