@@ -23,10 +23,10 @@ class FfprobeTest(unittest.TestCase):
         self.assertIn("-show_frames", cmd)
         self.assertIn("-show_packets", cmd)   # 復号失敗をパケットとの差分で見つけるため
         self.assertNotIn("best_effort_timestamp", " ".join(cmd))
-        self.assertIn("v:0", cmd)
+        self.assertIn("V:0", cmd)            # カバー画像（attached_pic）を除いた映像ストリーム
         for forbidden in ("-skip_frame", "-read_intervals", "-vf", "-r"):
             self.assertNotIn(forbidden, cmd)
-        self.assertEqual(cmd[-1], "in.mp4")
+        self.assertEqual(cmd[-2:], ["-i", "in.mp4"])   # '-' で始まる名前をオプションにしない
 
     def test_probe_uses_runner(self):
         with tempfile.TemporaryDirectory() as d:

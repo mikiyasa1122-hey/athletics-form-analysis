@@ -64,7 +64,7 @@ def _subindex(index: FrameIndex, ids: list[int]) -> FrameIndex:
                       nominal_fps=index.nominal_fps, capture_fps=index.capture_fps,
                       capture_time_status=index.capture_time_status,
                       capture_time_notes=list(index.capture_time_notes), decode_failures=list(index.decode_failures),
-                      decode_check=index.decode_check)
+                      decode_check=index.decode_check, discarded_packets=index.discarded_packets)
 
 
 def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:

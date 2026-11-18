@@ -1,0 +1,415 @@
+{
+  "run_id": "20261118-1956-real-video-ffprobe",
+  "title": "real-video-ffprobe",
+  "status": "complete",
+  "phase": "done",
+  "created": "2026-11-18T19:56:34+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "F-0003",
+    "F-0007",
+    "F-0010",
+    "W-0001",
+    "W-0005"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "実際の FFmpeg/ffprobe の出力（packets_and_frames 形式、Bフレーム、負のDTS）から原本フレーム索引を正しく作る（FR-TIME-002/003, NFR-TIME-001）",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "実ツールの出力形式が想定（packets/frames）と違い読めない、または誤って読む",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "FFmpeg 9.0 の実出力フィクスチャで形式とID・時刻を確認",
+              "command": "python3 -m unittest tests.test_real_ffprobe.ManifestExpectationsTest"
+            },
+            {
+              "id": "V2",
+              "method": "Bフレーム（復号順パケット・負のDTS）でIDが提示順",
+              "command": "python3 -m unittest tests.test_real_ffprobe.DecodeOrderTest"
+            }
+          ]
+        },
+        {
+          "id": "K2",
+          "text": "フィクスチャが実機の出力から離れていく（手で編集・別の版）",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "実機で試験動画を作り直し、ffprobe 出力が保存済みフィクスチャと一致",
+              "command": "python3 tools/make_test_videos.py --check"
+            }
+          ]
+        },
+        {
+          "id": "K13",
+          "text": "カバー画像のストリームを選ぶ・全パケットが D のとき黙る（レビュー N6, N7）",
+          "verifications": [
+            {
+              "id": "V16",
+              "method": "カバー画像を飛ばす、全 D は all_packets_discarded",
+              "command": "python3 -m unittest tests.test_timebase.DecodeFailureTest"
+            }
+          ]
+        },
+        {
+          "id": "K14",
+          "text": "manifest（作り方と期待値）がフィクスチャの作り直しと食い違う（レビュー N8）",
+          "verifications": [
+            {
+              "id": "V17",
+              "method": "--check が manifest も比べる",
+              "command": "python3 tools/make_test_videos.py --check"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "edit list で再生されない pre-roll パケット（flags D）を原本フレーム・復号失敗に数えず、時刻0を再生の先頭に合わせる（再レビュー N2）",
+      "risks": [
+        {
+          "id": "K3",
+          "text": "先頭カットした普通の動画で偽の復号失敗が出る・IDと時刻がずれる",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "実際の先頭カット動画で D パケット9個を除外、復号失敗0、ID・時刻が0から",
+              "command": "python3 -m unittest tests.test_real_ffprobe.EditListPrerollTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "実際に壊れたパケットでデコーダが落としたフレームを、パケットとの差分で復号失敗として検出し、IDを詰めない（FR-TIME-005, NFR-TIME-002）",
+      "risks": [
+        {
+          "id": "K4",
+          "text": "実デコーダの振る舞いでは復号失敗が検出できない",
+          "verifications": [
+            {
+              "id": "V5",
+              "method": "パケットの中身を壊した実動画で、壊したPTSのIDが復号失敗になり、後ろのIDが詰まらない",
+              "command": "python3 -m unittest tests.test_real_ffprobe.RealDecodeFailureTest"
+            }
+          ]
+        },
+        {
+          "id": "K12",
+          "text": "復号失敗で空いた間隔を撮影時の欠落と二重に数える（レビュー N5）",
+          "verifications": [
+            {
+              "id": "V15",
+              "method": "実際の破損動画で欠落0、after_decode_failure が失敗IDの直後",
+              "command": "python3 -m unittest tests.test_real_ffprobe.RealDecodeFailureTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": true,
+      "text": "可変FPS（例: 60→30fps）の遅い区間を欠落と誤判定せず、可変FPSとして扱う。本当の欠落は検出する（FR-TIME-003）",
+      "risks": [
+        {
+          "id": "K5",
+          "text": "全体の中央値と比べるため、遅い区間が全部「欠落」になり VFR と判定されない",
+          "verifications": [
+            {
+              "id": "V6",
+              "method": "実際の60→30fps動画で vfr=True・欠落0、実際の欠落動画で欠落1",
+              "command": "python3 -m unittest tests.test_real_ffprobe.ManifestExpectationsTest"
+            },
+            {
+              "id": "V7",
+              "method": "既存の合成データの欠落・VFR・異常PTSテストが引き続き通る",
+              "command": "python3 -m unittest tests.test_timebase"
+            }
+          ]
+        },
+        {
+          "id": "K9",
+          "text": "近い間隔の複数欠落を見逃す・比が大きいFPS切り替えで偽の欠落（レビュー B1, N1）",
+          "verifications": [
+            {
+              "id": "V12",
+              "method": "実際の動画（3枚おきに5回の欠落、120→30fps、切り替え直後の欠落、先頭と末尾の欠落）で欠落IDが作り方どおり",
+              "command": "python3 -m unittest tests.test_real_ffprobe.ManifestExpectationsTest"
+            }
+          ]
+        },
+        {
+          "id": "K10",
+          "text": "欠落をまたぐイベントが valid のまま",
+          "verifications": [
+            {
+              "id": "V13",
+              "method": "3枚おきの欠落を接地に重ねると、またぐイベントが「フレーム欠落を挟む」で要確認",
+              "command": "python3 -m unittest tests.test_real_ffprobe.EndToEndOnRealTimingTest"
+            }
+          ]
+        },
+        {
+          "id": "K15",
+          "text": "FPSが上がる切り替え（30→60、60→30→60）で遅い区間の末尾を欠落と誤判定（再レビュー B1）",
+          "verifications": [
+            {
+              "id": "V18",
+              "method": "実際の 30→60・60→30→60 動画で欠落0・VFR、上がる直前の本当の欠落だけを検出",
+              "command": "python3 -m unittest tests.test_real_ffprobe.ManifestExpectationsTest"
+            }
+          ]
+        },
+        {
+          "id": "K16",
+          "text": "区別できないケース（同じ長さの欠落の連続、減速直前の欠落）が黙って扱われる（再レビュー N1, N2）",
+          "verifications": [
+            {
+              "id": "V19",
+              "method": "既知の限界として manifest と README に記載し、振る舞いを実動画で固定",
+              "command": "python3 -m unittest tests.test_real_ffprobe.ManifestExpectationsTest.test_known_limits_are_documented_not_hidden"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R5",
+      "critical": true,
+      "text": "実際のコンテナ時刻で端から端まで解析し、イベント区間・接地時間・ピッチの範囲が真値を含む。スロー書き出し（メタデータあり/なし）では秒の値を出さない（AC-012/014/015）",
+      "risks": [
+        {
+          "id": "K6",
+          "text": "実際のPTS（time_base 1/15360 など）では区間や値が真値からずれる",
+          "verifications": [
+            {
+              "id": "V8",
+              "method": "240fps/可変FPS/欠落/破損の実動画で、全イベント区間と値の範囲が真値を含む",
+              "command": "python3 -m unittest tests.test_real_ffprobe.EndToEndOnRealTimingTest"
+            }
+          ]
+        },
+        {
+          "id": "K7",
+          "text": "実際のスロー書き出し動画を実時間として計測する",
+          "verifications": [
+            {
+              "id": "V9",
+              "method": "8倍スロー書き出しの実動画（メタデータあり/なし）で接地時間・ピッチが判定不可、角度は有効",
+              "command": "python3 -m unittest tests.test_real_ffprobe.EndToEndOnRealTimingTest"
+            }
+          ]
+        },
+        {
+          "id": "K11",
+          "text": "time_base で割り切れない間隔（240fps を 1/600）で FPS を誤測定し、正しい動画の計測を失う（レビュー N2）",
+          "verifications": [
+            {
+              "id": "V14",
+              "method": "実際の 1/600 MOV で verified・VFRでない・接地時間が有効、2,3 tick の交互をVFRにしない",
+              "command": "python3 -m unittest tests.test_real_ffprobe.EndToEndOnRealTimingTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R6",
+      "critical": false,
+      "text": "FFmpeg を PATH 反映前でも見つけられる（環境変数 → PATH → winget の既定の場所）",
+      "risks": [
+        {
+          "id": "K8",
+          "text": "winget で入れた直後のシェルやgateから ffprobe が見つからない",
+          "verifications": [
+            {
+              "id": "V10",
+              "method": "ffprobe の引数と CLI の動作（既存）",
+              "command": "python3 -m unittest tests.test_cli"
+            },
+            {
+              "id": "V11",
+              "method": "実機で ffmpeg/ffprobe を見つけて試験動画を作れる",
+              "command": "python3 tools/make_test_videos.py --check"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": true,
+    "blocking_findings": 0,
+    "summary": "3回目のレビュー pass（blocking 0）。1回目 B1（近接複数欠落の見逃し）→2回目 新B1（加速切替で偽欠落）→3回目で解消。残り: 急な段階的FPS変化で偽欠落、同じ長さの欠落ちょうど3連続は未検出、2%許容 → README に限界として記載"
+  },
+  "memory_done": true,
+  "fix_iterations": 2,
+  "gate": {
+    "ran_at": "2026-11-18T20:29:23+09:00",
+    "finished_epoch": 1795001363.3247967,
+    "stamp": "20261118-202855",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.25,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.13,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 4.89,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.71,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-check-test-js.log"
+        },
+        "real-ffprobe": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.1,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-check-real-ffprobe.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.48,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V1.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.09,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V3.log"
+        },
+        "V16": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V16.log"
+        },
+        "V17": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.05,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V17.log"
+        },
+        "V4": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V4.log"
+        },
+        "V5": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.32,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V5.log"
+        },
+        "V15": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.32,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V15.log"
+        },
+        "V6": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.45,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V6.log"
+        },
+        "V7": {
+          "pass": true,
+          "exit": 0,
+          "sec": 2.69,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V7.log"
+        },
+        "V12": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.47,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V12.log"
+        },
+        "V13": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.67,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V13.log"
+        },
+        "V18": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.45,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V18.log"
+        },
+        "V19": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.34,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V19.log"
+        },
+        "V8": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.67,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V8.log"
+        },
+        "V9": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.66,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V9.log"
+        },
+        "V14": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.66,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V14.log"
+        },
+        "V10": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.57,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V10.log"
+        },
+        "V11": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.09,
+          "log": ".aq-dlc\\runs\\20261118-1956-real-video-ffprobe\\gate\\20261118-202855-verify-V11.log"
+        }
+      }
+    }
+  },
+  "stop_blocks": 0
+}

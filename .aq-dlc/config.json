@@ -20,6 +20,11 @@
       "name": "test-js",
       "command": "node --test web/tests/player-core.test.js web/tests/static.test.js",
       "timeout_sec": 300
+    },
+    {
+      "name": "real-ffprobe",
+      "command": "python3 tools/make_test_videos.py --check",
+      "timeout_sec": 300
     }
   ]
 }

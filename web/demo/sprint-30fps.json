@@ -51,6 +51,8 @@
   },
   "vfr": false,
   "gap_frame_ids": [],
+  "after_decode_failure_frame_ids": [],
+  "discarded_packet_count": 0,
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
   "decode_check": "packets",
@@ -4225,6 +4227,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "da7959eb3e5e983d60578cc016c80e761a4aefd165fcb54642d92814a2649375",
+ "analysis_id": "4fb74eaf3521a1bddcb9e56878f0f4d9e9ef76f51dd5f42e693404a83837f85a",
  "demo_label": "30fps（時間分解能が粗い）"
 }

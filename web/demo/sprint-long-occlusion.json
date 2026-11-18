@@ -52,9 +52,11 @@
    "max": 0.008333333333333333
   },
   "vfr": false,
-  "gap_frame_ids": [
+  "gap_frame_ids": [],
+  "after_decode_failure_frame_ids": [
    31
   ],
+  "discarded_packet_count": 0,
   "duplicate_pts_frame_ids": [],
   "decode_failures": [
    30
@@ -341,7 +343,7 @@
    "t": 0.12916666666666668,
    "t_exact": "31/240",
    "flags": [
-    "after_gap"
+    "after_decode_failure"
    ]
   },
   {
@@ -21948,6 +21950,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "c2b3ed4361a77e573186afc606bb2c8dae8772a754418dc5fdd867353b9025e2",
+ "analysis_id": "dfaee2a1938d843228e1c76d9e4f525a24fdf540a5a0ad3a3779268bf4bfa1a3",
  "demo_label": "240fps・1歩分を覆う遮蔽と復号失敗1枚"
 }

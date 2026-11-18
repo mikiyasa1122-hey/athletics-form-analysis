@@ -128,7 +128,12 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                 continue
             if last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
                 # 途切れが長いと、間で何回遷移したか分からない。イベントを作らず区切りとして記録する
-                why = "フレーム欠落" if "after_gap" in frame.flags and not unobserved_between else "観測できないフレームが続く"
+                if "after_decode_failure" in frame.flags and not unobserved_between:
+                    why = "復号できなかったフレーム"
+                elif "after_gap" in frame.flags and not unobserved_between:
+                    why = "フレーム欠落"
+                else:
+                    why = "観測できないフレームが続く"
                 breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
                                                last_frame.timestamp, frame.timestamp,
                                                f"{why}（{float(frame.timestamp - last_frame.timestamp) * 1000:.0f} ms）"))
@@ -138,6 +143,8 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                     reasons.append("遷移区間に観測できないフレームがある")
                 if "after_gap" in frame.flags:
                     reasons.append("フレーム欠落を挟む")
+                if "after_decode_failure" in frame.flags:
+                    reasons.append("復号できなかったフレームを挟む")
                 prev_pose = poses.get(last_frame.source_frame_id)
                 if (pose and DEGRADING_FLAGS & set(pose.flags)) or (prev_pose and DEGRADING_FLAGS & set(prev_pose.flags)):
                     reasons.append("イベント前後のフレームにモーションブラー")

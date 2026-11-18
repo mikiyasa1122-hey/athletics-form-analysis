@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from typing import Any, Callable
@@ -22,23 +21,28 @@ from .metrics import CaptureConditions
 from .pose import FixturePoseAdapter
 from .synth import GROUND_Y, CaptureSpec, make_dataset
 from .timebase import build_frame_index
+from .tools import find_tool
 
 Runner = Callable[[list[str]], str]
 
 
 def ffprobe_command(video: str) -> list[str]:
     # -show_frames は提示順に復号済みフレームを返す。間引きはしない（FR-TIME-005）
-    # -show_packets はコンテナ上の全フレームのPTS。復号できなかったフレームを差分で見つけるのに使う
-    # （実機の FFmpeg での確認はまだ。packets_and_frames 形式でも読めるようにしてある）
-    return ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_format",
-            "-show_entries", "frame=media_type,stream_index,pts,pkt_dts:packet=codec_type,stream_index,pts,dts",
-            "-show_packets", "-show_frames", "-of", "json", video]
+    # -show_packets はコンテナ上の全フレームのPTSと flags（D = edit list で再生対象外）。
+    # 復号できなかったフレームは frames から消えるだけなので、パケットとの差分で見つける。
+    # 両方を指定すると ffprobe 9.0 は packets_and_frames 形式で出力する（実機で確認済み）。
+    # V:0 = カバー画像（attached_pic）を除いた最初の映像ストリーム。
+    # パスは -i の値として渡し、'-' で始まるファイル名がオプションと解釈されないようにする。
+    return ["ffprobe", "-v", "error", "-select_streams", "V:0", "-show_streams", "-show_format",
+            "-show_entries", "frame=media_type,stream_index,pts,pkt_dts:packet=codec_type,stream_index,pts,dts,flags",
+            "-show_packets", "-show_frames", "-of", "json", "-i", video]
 
 
 def _default_runner(cmd: list[str]) -> str:
-    if shutil.which(cmd[0]) is None:
-        raise SystemExit(f"{cmd[0]} が見つからない。FFmpeg をインストールしてから実行する")
-    return subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+    exe = find_tool(cmd[0])
+    if exe is None:
+        raise SystemExit(f"{cmd[0]} が見つからない。FFmpeg をインストールするか ATHFORM_{cmd[0].upper()} で場所を指定する")
+    return subprocess.run([exe, *cmd[1:]], check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
 def probe_video(video: str, runner: Runner = _default_runner) -> dict[str, Any]:
