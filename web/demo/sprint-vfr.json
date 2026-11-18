@@ -51,6 +51,7 @@
   },
   "vfr": true,
   "gap_frame_ids": [],
+  "discarded_packet_count": 0,
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
   "decode_check": "packets",
@@ -12819,6 +12820,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "2785019f355ba9e96e52e198322c1882fbe373cca685887fa6a2889e8f72d9dd",
+ "analysis_id": "893164291cca1a53e500854991c76158693e2236a765d5ce0bc91323eda88ad0",
  "demo_label": "可変フレームレート＋一部遮蔽"
 }

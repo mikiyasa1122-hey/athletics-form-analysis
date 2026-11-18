@@ -51,6 +51,7 @@
   },
   "vfr": false,
   "gap_frame_ids": [],
+  "discarded_packet_count": 0,
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
   "decode_check": "packets",
@@ -24340,6 +24341,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "c87c52723fea0774332fc47c7eeb10c59ffe6bcd0c3b190a7173af77d29f5142",
+ "analysis_id": "4d1bb8726dc659bd1563606beca573fd7cd0ea7c8a6ee651ce7270a0bb71b0c8",
  "demo_label": "240fps撮影を30fpsタイムラインに書き出したスロー動画（メタデータなし）"
 }

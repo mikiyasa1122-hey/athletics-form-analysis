@@ -51,6 +51,7 @@
   },
   "vfr": false,
   "gap_frame_ids": [],
+  "discarded_packet_count": 0,
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
   "decode_check": "packets",
@@ -24363,6 +24364,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "49d48686abd65b05cfe08b2ce52548ae884cea90db72a384e7ff202e09de3b35",
+ "analysis_id": "42f5e7c564745dc90d16f34f6dbe42052ba2d274d6561e5608e2aaca866daae4",
  "demo_label": "240fps・撮影メタデータあり"
 }

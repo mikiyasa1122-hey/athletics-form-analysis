@@ -1,0 +1,73 @@
+{
+ "generated_with": "ffprobe version 9.0.1-essentials_build-www.gyan.dev Copyright (c) 2007-2026 the FFmpeg developers",
+ "clips": {
+  "cfr240_tagged": {
+   "description": "240fps・撮影FPSメタデータあり（Android と同じキー）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "verified"
+   }
+  },
+  "cfr30_bframes": {
+   "description": "30fps・Bフレームあり（パケットは復号順、DTSは負から始まる）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "container_only"
+   }
+  },
+  "vfr_60_30": {
+   "description": "可変FPS: 前半60fps、後半30fps（暗所で端末がFPSを落とした想定）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "container_only",
+    "expect_vfr": true,
+    "expect_gaps": 0
+   }
+  },
+  "drop240": {
+   "description": "240fpsで撮影中に n=40〜63（0.1秒分）が記録されなかった（PTSはそのまま飛ぶ）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "container_only",
+    "expect_gaps": 1,
+    "dropped_frames": [
+     40,
+     63
+    ]
+   }
+  },
+  "slowmo8_plain": {
+   "description": "240fps撮影を8倍に引き伸ばして30fpsタイムラインに書き出したスロー（メタデータなし）",
+   "truth": {
+    "capture_time_scale": 8,
+    "expect_status": "container_only"
+   }
+  },
+  "slowmo8_tagged": {
+   "description": "同じスロー書き出しに撮影FPSメタデータ（240）が付いている",
+   "truth": {
+    "capture_time_scale": 8,
+    "expect_status": "slowmo_suspected"
+   }
+  },
+  "cut_copy": {
+   "description": "30fpsを先頭0.3秒でカット（再エンコードなし）。edit list で先頭パケットが再生対象外（flags D）になる",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "container_only",
+    "expect_decode_failures": 0
+   }
+  },
+  "corrupt": {
+   "description": "30fpsの非キーフレーム2つのパケットの中身を0で潰した（デコーダがフレームを落とす）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect_status": "container_only",
+    "corrupted_packet_pts": [
+     4608,
+     5632
+    ]
+   }
+  }
+ }
+}

@@ -71,6 +71,7 @@ class FrameIndex:
     capture_time_notes: list[str] = field(default_factory=list)
     decode_failures: list[int] = field(default_factory=list)  # 復号できなかった原本フレームID（パケット基準）
     decode_check: str = "unavailable"   # packets = パケットと突き合わせ済み / unavailable = 検出できない
+    discarded_packets: int = 0          # edit list で再生対象外（flags に D）のパケット。原本フレームに数えない
 
     def by_id(self, source_frame_id: int) -> SourceFrame:
         frame = self._lookup().get(source_frame_id)
@@ -88,9 +89,10 @@ class FrameIndex:
             object.__setattr__(self, "_cache", cache)
         return cache
 
-    def intervals(self) -> list[Fraction]:
+    def intervals(self, *, exclude_gaps: bool = False) -> list[Fraction]:
         timed = [f for f in self.frames if f.usable_for_timing]
-        return [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])]
+        return [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])
+                if not (exclude_gaps and "after_gap" in b.flags)]
 
     @property
     def time_axis_valid(self) -> bool:
@@ -112,8 +114,9 @@ class FrameIndex:
                 "median": float(med) if med is not None else None,
                 "max": float(max(ivs)) if ivs else None,
             },
-            "vfr": is_vfr(ivs),
+            "vfr": is_vfr(self.intervals(exclude_gaps=True)),
             "gap_frame_ids": gaps,
+            "discarded_packet_count": self.discarded_packets,
             "duplicate_pts_frame_ids": dups,
             "decode_failures": list(self.decode_failures),
             "decode_check": self.decode_check,
@@ -136,13 +139,11 @@ def parse_fraction(text: str | None) -> Fraction | None:
 
 
 def is_vfr(intervals: list[Fraction]) -> bool:
+    """欠落を除いたフレーム間隔が、中央値の2%を超えてばらつくか。"""
     if len(intervals) < 2:
         return False
     med = median(intervals)
-    regular = [iv for iv in intervals if iv <= med * GAP_FACTOR]
-    if not regular:
-        return False
-    return (max(regular) - min(regular)) > med * VFR_TOLERANCE
+    return (max(intervals) - min(intervals)) > med * VFR_TOLERANCE
 
 
 def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None = None,
@@ -167,9 +168,13 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
 
     # パケット（コンテナに記録された原本フレーム）があれば、そのPTS順で原本フレームIDを振る。
     # 復号に失敗したフレームは ffprobe の frames から消えるだけなので、パケットとの差分で検出する。
+    # edit list で捨てられるパケット（先頭カットした動画の pre-roll など）は flags に D が付き、
+    # 再生されないので原本フレームにも復号失敗にも数えない（実機の ffprobe 9.0 で確認）
     packet_rank: dict[int, int] | None = None
-    if raw_packets:
-        packet_pts = sorted({_require_pts(p, f"パケット {i}") for i, p in enumerate(raw_packets)})
+    discarded = [p for p in raw_packets if "D" in str(p.get("flags", ""))]
+    kept = [p for p in raw_packets if "D" not in str(p.get("flags", ""))]
+    if kept:
+        packet_pts = sorted({_require_pts(p, f"パケット {i}") for i, p in enumerate(kept)})
         packet_rank = {pts: rank for rank, pts in enumerate(packet_pts)}
 
     frames: list[SourceFrame] = []
@@ -221,7 +226,8 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
     frames = _mark_gaps(frames)
     nominal = parse_fraction(stream.get("avg_frame_rate")) or parse_fraction(stream.get("r_frame_rate"))
     index = FrameIndex(frames=frames, time_base=time_base, nominal_fps=nominal, capture_fps=None,
-                       capture_time_status=UNKNOWN, decode_failures=decode_failures, decode_check=decode_check)
+                       capture_time_status=UNKNOWN, decode_failures=decode_failures, decode_check=decode_check,
+                       discarded_packets=len(discarded))
     _resolve_capture_time(index, probe, stream, declared_capture_fps, declared_slowmo)
     return index
 
@@ -250,13 +256,24 @@ def _require_pts(entry: dict[str, Any], label: str) -> int:
         raise TimebaseError(f"{label}のPTSが整数でない: {pts_val!r}") from exc
 
 
+GAP_WINDOW = 4   # 欠落の判定で比べる前後の間隔の数
+
+
 def _mark_gaps(frames: list[SourceFrame]) -> list[SourceFrame]:
+    """前後の間隔（局所的な中央値）より明らかに長い間隔を「欠落の疑い」とする。
+
+    全体の中央値と比べると、可変FPS（例: 前半60fps・後半30fps）の遅い区間がすべて欠落に見えてしまう。
+    """
     timed = [f for f in frames if f.usable_for_timing]
     ivs = [b.timestamp - a.timestamp for a, b in zip(timed, timed[1:])]
     if not ivs:
         return frames
-    med = median(ivs)
-    gap_ids = {b.source_frame_id for a, b in zip(timed, timed[1:]) if b.timestamp - a.timestamp > med * GAP_FACTOR}
+    gap_ids = set()
+    for i, iv in enumerate(ivs):
+        neighbors = ivs[max(0, i - GAP_WINDOW):i] + ivs[i + 1:i + 1 + GAP_WINDOW]
+        local = median(neighbors) if neighbors else iv
+        if iv > local * GAP_FACTOR:
+            gap_ids.add(timed[i + 1].source_frame_id)
     out = []
     for f in frames:
         if f.source_frame_id in gap_ids:
