@@ -1,0 +1,733 @@
+{
+  "run_id": "20261118-1916-vertical-slice-core",
+  "title": "vertical-slice-core",
+  "status": "complete",
+  "phase": "done",
+  "created": "2026-11-18T19:16:30+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "F-0003",
+    "W-0001",
+    "W-0002",
+    "W-0003"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "元動画の時間軸: PTS×time_baseで各原本フレームにID・提示順・正確な時刻を付け、時間差は公称FPSでなく実フレーム間隔で求める（FR-TIME-002/003, NFR-TIME-001, AC-012）",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "VFR動画を固定FPSで換算し時間がずれる",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "VFR合成データで接地時間・ピッチの真値と比較し、固定FPS換算との差が出ることも確認",
+              "command": "python3 -m unittest tests.test_timebase.VFRTest"
+            }
+          ]
+        },
+        {
+          "id": "K2",
+          "text": "重複PTS・欠落・PTS逆転を黙って受け入れる",
+          "verifications": [
+            {
+              "id": "V2",
+              "method": "重複・欠落・逆転PTSを含む入力でフラグと時間軸無効を確認",
+              "command": "python3 -m unittest tests.test_timebase.AnomalyTest"
+            }
+          ]
+        },
+        {
+          "id": "K3",
+          "text": "PTSがない入力でFPSを仮定して成功扱いにする（NFR-TIME-004）",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "PTS欠落・time_base欠落・不正値でTimebaseErrorになること",
+              "command": "python3 -m unittest tests.test_timebase.InvalidInputTest"
+            }
+          ]
+        },
+        {
+          "id": "K4",
+          "text": "浮動小数の累積誤差で時刻がずれる",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "Fractionで時刻が厳密に一致すること（長尺1/90000）",
+              "command": "python3 -m unittest tests.test_timebase.ExactTimeTest"
+            }
+          ]
+        },
+        {
+          "id": "K33",
+          "text": "best_effort_timestamp など ffprobe が推測した時刻を使う（レビューN2）",
+          "verifications": [
+            {
+              "id": "V33",
+              "method": "PTSのないフレーム・パケットは best_effort があっても拒否",
+              "command": "python3 -m unittest tests.test_timebase.InvalidInputTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "撮影FPS・コンテナFPS・申告FPSを区別し、撮影実時間を確認できないスロー書き出しでは秒単位の指標を判定不可にする（FR-TIME-004, AC-015, §10.3）",
+      "risks": [
+        {
+          "id": "K5",
+          "text": "撮影FPSメタデータと出力FPSの不一致を見逃す",
+          "verifications": [
+            {
+              "id": "V5",
+              "method": "capture.fpsタグ付きスロー書き出しでslowmo_suspected・接地時間unavailable",
+              "command": "python3 -m unittest tests.test_capture_time.MetadataTest"
+            }
+          ]
+        },
+        {
+          "id": "K6",
+          "text": "メタデータのないスロー書き出しを実時間として計測する",
+          "verifications": [
+            {
+              "id": "V6",
+              "method": "メタデータなし8倍スローで種目の妥当性チェックにより秒指標がunavailable、角度は算出",
+              "command": "python3 -m unittest tests.test_capture_time.PlausibilityTest"
+            }
+          ]
+        },
+        {
+          "id": "K7",
+          "text": "利用者の申告FPSを精度の証明に使う",
+          "verifications": [
+            {
+              "id": "V7",
+              "method": "申告のみではverifiedにならず、不一致ならdeclaredで秒指標unavailable",
+              "command": "python3 -m unittest tests.test_capture_time.DeclaredTest"
+            }
+          ]
+        },
+        {
+          "id": "K30",
+          "text": "接地3回未満の短いスロー書き出し・2倍スローを実時間として扱う（レビューB2, N6）",
+          "verifications": [
+            {
+              "id": "V30",
+              "method": "短い8倍スロー・2倍スローで秒単位の指標が valid/estimated にならない、通常の短い素材は推定値",
+              "command": "python3 -m unittest tests.test_capture_time.PlausibilityTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "接地・離地イベントを観測フレームで挟んだ時刻区間で持ち、接地時間は区間から可能範囲を求め、分解能を超える桁を表示しない（FR-TIME-008, AC-013, AC-017, NFR-TIME-003）",
+      "risks": [
+        {
+          "id": "K8",
+          "text": "区間の下限・上限が真値を含まない",
+          "verifications": [
+            {
+              "id": "V8",
+              "method": "240/120/60/30fps・VFRで全イベント区間が真の接地/離地時刻を含むこと",
+              "command": "python3 -m unittest tests.test_events.IntervalContainsTruthTest"
+            }
+          ]
+        },
+        {
+          "id": "K9",
+          "text": "30fpsで接地時間を精密値として出す",
+          "verifications": [
+            {
+              "id": "V9",
+              "method": "30fpsでreview_required・表示桁が粗い、240fpsでは許容内",
+              "command": "python3 -m unittest tests.test_metrics.ResolutionGateTest"
+            }
+          ]
+        },
+        {
+          "id": "K10",
+          "text": "遮蔽フレームを挟むイベントを確かなものとして扱う",
+          "verifications": [
+            {
+              "id": "V10",
+              "method": "遮蔽・ブラーを挟むイベントがreview_requiredになり区間が広がる",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest"
+            }
+          ]
+        },
+        {
+          "id": "K28",
+          "text": "長い遮蔽・欠落で1周期が丸ごと消え、同じ足のイベントが誤ってつながる（レビューB1）",
+          "verifications": [
+            {
+              "id": "V28",
+              "method": "1歩分を覆う遮蔽・欠落で観測の途切れを記録し、またぐ指標を判定不可にし、全区間が真値を含む",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": true,
+      "text": "指標ごとの品質ゲート: 角度は視点と点の可視性、時間指標は時間軸と不確実性で判定し、FPS一律にしない。判定不可には理由を必ず付ける（FR-TIME-009/010, FR-SINGLE-004, §6.1, §9.4, AC-002, AC-005）",
+      "risks": [
+        {
+          "id": "K11",
+          "text": "30fpsで角度まで判定不可にする／逆に接地時間を通す",
+          "verifications": [
+            {
+              "id": "V11",
+              "method": "30fpsで膝角度valid・接地時間review_requiredが同時に成り立つ",
+              "command": "python3 -m unittest tests.test_metrics.PerMetricGateTest"
+            }
+          ]
+        },
+        {
+          "id": "K12",
+          "text": "側面以外の視点や欠損点で角度を出す",
+          "verifications": [
+            {
+              "id": "V12",
+              "method": "正面視点・欠損点・NaNでunavailable＋理由",
+              "command": "python3 -m unittest tests.test_metrics.AngleGateTest"
+            }
+          ]
+        },
+        {
+          "id": "K13",
+          "text": "指標のメタデータ（単位・定義・座標系・根拠）が欠ける／モデル信頼度を誤差として扱う",
+          "verifications": [
+            {
+              "id": "V13",
+              "method": "全指標に§6.1の項目があり、unavailableには理由があり、model_scoreが誤差欄に使われない",
+              "command": "python3 -m unittest tests.test_metrics.MetadataCompletenessTest"
+            }
+          ]
+        },
+        {
+          "id": "K29",
+          "text": "ピッチが左右交互を確認せず、接地の見落とし・重複で誤る／訂正後の順序不整合（レビューB1, N3）",
+          "verifications": [
+            {
+              "id": "V29",
+              "method": "交互でない訂正で該当イベントと接地時間・ピッチが要確認、遮蔽フレームの角度は判定不可",
+              "command": "python3 -m unittest tests.test_corrections.RecomputeTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R5",
+      "critical": true,
+      "text": "精度モードは全原本フレームを解析し、推定失敗・復号失敗・間引きを件数とIDで記録する。プレビュー（間引き）は正式な精密値にしない（FR-TIME-005, NFR-TIME-002, AC-014, ARCH-014）",
+      "risks": [
+        {
+          "id": "K14",
+          "text": "推定に失敗したフレームが黙って抜ける",
+          "verifications": [
+            {
+              "id": "V14",
+              "method": "一部フレームの推定欠落・復号失敗が件数とIDで報告される",
+              "command": "python3 -m unittest tests.test_analysis.CompletenessTest"
+            }
+          ]
+        },
+        {
+          "id": "K15",
+          "text": "間引き結果がvalidとして公開される",
+          "verifications": [
+            {
+              "id": "V15",
+              "method": "プレビューでvalidが出ない、理由なしの間引きは拒否",
+              "command": "python3 -m unittest tests.test_analysis.PreviewTest"
+            }
+          ]
+        },
+        {
+          "id": "K32",
+          "text": "実際のffprobe出力では復号失敗がフレームの欠落としてしか現れず、検出できない・IDが詰まる（レビューB4）",
+          "verifications": [
+            {
+              "id": "V32",
+              "method": "パケットとフレームの差分で復号失敗を検出し、IDを詰めない（packets／packets_and_frames形式、復号順パケット）",
+              "command": "python3 -m unittest tests.test_timebase.DecodeFailureTest"
+            }
+          ]
+        },
+        {
+          "id": "K34",
+          "text": "プレビューで推定失敗フレームを索引から外し、イベントを確かなものとして扱う（レビューN4）",
+          "verifications": [
+            {
+              "id": "V34",
+              "method": "プレビューで推定失敗フレームを挟むイベントが要確認",
+              "command": "python3 -m unittest tests.test_analysis.PreviewTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R6",
+      "critical": true,
+      "text": "補間・生成フレームや派生動画のフレームを計測の一次根拠にせず、プロキシは元動画時刻で原本に対応づける（FR-TIME-007, FR-TIME-011, AC-016, AC-019）",
+      "risks": [
+        {
+          "id": "K16",
+          "text": "生成フレームの姿勢が解析に入る",
+          "verifications": [
+            {
+              "id": "V16",
+              "method": "generatedフレーム・原本にないIDの姿勢を拒否",
+              "command": "python3 -m unittest tests.test_derivative.GeneratedFrameTest"
+            }
+          ]
+        },
+        {
+          "id": "K17",
+          "text": "複製・削除のあるプロキシの番号を原本と同一視する",
+          "verifications": [
+            {
+              "id": "V17",
+              "method": "複製・欠落・補間を含むプロキシでframe_accurate=falseと各フレームの種別",
+              "command": "python3 -m unittest tests.test_derivative.ProxyMappingTest"
+            }
+          ]
+        },
+        {
+          "id": "K31",
+          "text": "整数倍補間のプロキシで補間フレームが許容幅に入り原本扱いされる（レビューB3）",
+          "verifications": [
+            {
+              "id": "V31",
+              "method": "×2・×4補間で中間フレームがすべてgenerated、time_base丸めは許容",
+              "command": "python3 -m unittest tests.test_derivative.ProxyMappingTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R7",
+      "critical": true,
+      "text": "再生倍率は表示状態であり、解析値・イベント時刻・フレームIDを変えない（FR-TIME-006, AC-010, ARCH-011）",
+      "risks": [
+        {
+          "id": "K18",
+          "text": "再生倍率が解析入力に混入する",
+          "verifications": [
+            {
+              "id": "V18",
+              "method": "analyzeが再生倍率を受け取らず、同一入力で同一スナップショット",
+              "command": "python3 -m unittest tests.test_analysis.PlaybackIndependenceTest"
+            }
+          ]
+        },
+        {
+          "id": "K19",
+          "text": "プレイヤーで倍率を変えると時刻・データが変わる",
+          "verifications": [
+            {
+              "id": "V19",
+              "method": "0.1/0.25/0.5/1.0倍でフレームID・元動画時刻・スナップショットが不変、待ち時間だけが変わる",
+              "command": "node --test web/tests/player-core.test.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R8",
+      "critical": true,
+      "text": "1原本フレーム単位の送り戻しで、表示するフレームID・PTS・元動画時刻・骨格が常に同じ原本フレームを指す（FR-PLAY-002/003/004, AC-011, NFR-PLAY-001）",
+      "risks": [
+        {
+          "id": "K20",
+          "text": "骨格を近傍時刻の別フレームから表示する",
+          "verifications": [
+            {
+              "id": "V20",
+              "method": "全フレームで overlay.source_frame_id == 表示フレームID、無い場合はnull",
+              "command": "node --test web/tests/player-core.test.js"
+            }
+          ]
+        },
+        {
+          "id": "K21",
+          "text": "VFRで再生間隔が固定FPS前提になる",
+          "verifications": [
+            {
+              "id": "V21",
+              "method": "次フレームまでの待ち時間がPTS差/倍率で決まる",
+              "command": "node --test web/tests/player-core.test.js"
+            }
+          ]
+        },
+        {
+          "id": "K22",
+          "text": "画面の要素IDの不一致・解析データ由来の文字列をHTMLとして挿入（XSS）",
+          "verifications": [
+            {
+              "id": "V22",
+              "method": "app.jsの参照IDがHTMLにあり、innerHTML等を使わない静的検査",
+              "command": "node --test web/tests/static.test.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R9",
+      "critical": true,
+      "text": "手動訂正は自動検出を上書きせず別レイヤーに監査情報付きで保存し、依存指標を再計算する（§7.4, AC-008, AC-018, FR-PLAY-008）",
+      "risks": [
+        {
+          "id": "K23",
+          "text": "訂正で自動検出値が失われる／監査情報なしで訂正できる",
+          "verifications": [
+            {
+              "id": "V23",
+              "method": "訂正後もauto層が残り、訂正者・日時・理由が必須",
+              "command": "python3 -m unittest tests.test_corrections.LayerTest"
+            }
+          ]
+        },
+        {
+          "id": "K24",
+          "text": "訂正後に接地時間が古いまま",
+          "verifications": [
+            {
+              "id": "V24",
+              "method": "離地を訂正すると接地時間と根拠フレームが更新される",
+              "command": "python3 -m unittest tests.test_corrections.RecomputeTest"
+            }
+          ]
+        },
+        {
+          "id": "K25",
+          "text": "存在しないフレームや重複PTSフレームへの訂正を受け付ける",
+          "verifications": [
+            {
+              "id": "V25",
+              "method": "不正なフレームID・先頭フレーム・不明な操作を拒否",
+              "command": "python3 -m unittest tests.test_corrections.InvalidCorrectionTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R10",
+      "critical": true,
+      "text": "同じ入力・モデル版・設定なら同じ結果（analysis_id）を再現し、原本ハッシュ・モデル・アルゴリズム版を結果に残す（FR-TIME-014, FR-POSE-006, FR-TIME-001, G-Q7）",
+      "risks": [
+        {
+          "id": "K26",
+          "text": "非決定的な出力や版情報の欠落で再現・追跡できない",
+          "verifications": [
+            {
+              "id": "V26",
+              "method": "2回解析で同一ハッシュ、設定変更でハッシュ変化、版情報が揃う",
+              "command": "python3 -m unittest tests.test_analysis.ReproducibilityTest"
+            }
+          ]
+        },
+        {
+          "id": "K35",
+          "text": "別の動画の probe とハッシュが結び付けられる（レビューN7）",
+          "verifications": [
+            {
+              "id": "V35",
+              "method": "format.size とファイルサイズが一致しない・size がない probe を拒否",
+              "command": "python3 -m unittest tests.test_cli.CliRunTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R11",
+      "critical": false,
+      "text": "CLIで probe（ffprobe）→ analyze → demo を実行でき、プレイヤーで結果を確認できる",
+      "risks": [
+        {
+          "id": "K27",
+          "text": "ffprobeのコマンドが間引き・誤ったストリームを指定する／CLIが壊れている",
+          "verifications": [
+            {
+              "id": "V27",
+              "method": "ffprobe引数の検査（偽ランナー）とCLIの analyze/demo の実行",
+              "command": "python3 -m unittest tests.test_cli"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": true,
+    "blocking_findings": 0,
+    "summary": "1回目 fix_required（B1-B4）→ 修正後の再レビュー pass（blocking 0, non-blocking 7）。N1（パケットのないフレームを時刻に使わない）と N3（パケット情報なしを制約に明記）は対応済み。N2/N4/N5/N6/N7 は README に限界として記載"
+  },
+  "memory_done": true,
+  "fix_iterations": 1,
+  "gate": {
+    "ran_at": "2026-11-18T19:48:19+09:00",
+    "finished_epoch": 1794998899.5385005,
+    "stamp": "20261118-194800",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.26,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.13,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.24,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.64,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-check-test-js.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V1.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V3.log"
+        },
+        "V4": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.64,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V4.log"
+        },
+        "V33": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V33.log"
+        },
+        "V5": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.41,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V5.log"
+        },
+        "V6": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.41,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V6.log"
+        },
+        "V7": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V7.log"
+        },
+        "V30": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.38,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V30.log"
+        },
+        "V8": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V8.log"
+        },
+        "V9": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.34,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V9.log"
+        },
+        "V10": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.42,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V10.log"
+        },
+        "V28": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.41,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V28.log"
+        },
+        "V11": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V11.log"
+        },
+        "V12": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.42,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V12.log"
+        },
+        "V13": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V13.log"
+        },
+        "V29": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.52,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V29.log"
+        },
+        "V14": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V14.log"
+        },
+        "V15": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V15.log"
+        },
+        "V32": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.35,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V32.log"
+        },
+        "V34": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.35,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V34.log"
+        },
+        "V16": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.29,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V16.log"
+        },
+        "V17": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.3,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V17.log"
+        },
+        "V31": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.29,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V31.log"
+        },
+        "V18": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V18.log"
+        },
+        "V19": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.61,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V19.log"
+        },
+        "V20": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.6,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V20.log"
+        },
+        "V21": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.61,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V21.log"
+        },
+        "V22": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.15,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V22.log"
+        },
+        "V23": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V23.log"
+        },
+        "V24": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.51,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V24.log"
+        },
+        "V25": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.44,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V25.log"
+        },
+        "V26": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V26.log"
+        },
+        "V35": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.52,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V35.log"
+        },
+        "V27": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.52,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194800-verify-V27.log"
+        }
+      }
+    }
+  },
+  "stop_blocks": 0
+}

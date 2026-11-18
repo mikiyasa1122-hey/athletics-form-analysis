@@ -1,4 +1,25 @@
 {
   "_note": "プロジェクト固有の設定。checks は技術スタックを決めたときに登録する。全体設定（~/.aq-dlc/config.json）の値はここで上書きできる。",
-  "checks": []
+  "checks": [
+    {
+      "name": "compile",
+      "command": "python3 -m compileall -q athform tests",
+      "timeout_sec": 120
+    },
+    {
+      "name": "js-syntax",
+      "command": "node --check web/app.js && node --check web/player-core.js",
+      "timeout_sec": 60
+    },
+    {
+      "name": "test",
+      "command": "python3 -W error::ResourceWarning -m unittest discover -s tests -t .",
+      "timeout_sec": 600
+    },
+    {
+      "name": "test-js",
+      "command": "node --test web/tests/player-core.test.js web/tests/static.test.js",
+      "timeout_sec": 300
+    }
+  ]
 }
