@@ -90,6 +90,45 @@ CLIPS: dict[str, tuple[str, dict, list[str]]] = {
          "-vf", "setpts='if(lt(N,36),N,2*N-36)/(60*TB)',select='not(eq(n,38))'",
          "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
     ),
+    "vfr_30_60": (
+        "可変FPS: 30fps（36枚）から60fps（36枚）へ上がる。明るい場所に出た想定。遅い区間の末尾を欠落にしない",
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 72, **_CFR, "vfr": True}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
+         "-vf", "setpts='if(lt(N,36),2*N,N+36)/(60*TB)'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
+    "vfr_60_30_60": (
+        "可変FPS: 60fps（30枚）→30fps（10枚）→60fps（32枚）",
+        {"capture_time_scale": 1, "expect": {"status": "container_only", "frames": 72, **_CFR, "vfr": True}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
+         "-vf", "setpts='if(lt(N,30),N,if(lt(N,40),2*N-30,N+10))/(60*TB)'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
+    "speedup_drop": (
+        "30fps→60fps に上がる直前（30fps区間の n=34）に1枚欠落",
+        {"capture_time_scale": 1, "dropped_source_n": [[34, 34]],
+         "expect": {"status": "container_only", "frames": 71, **_CFR, "vfr": True, "gaps": [34]}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
+         "-vf", "setpts='if(lt(N,36),2*N,N+36)/(60*TB)',select='not(eq(n,34))'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
+    "run4_drops240": (
+        "【既知の限界】240fpsで n=41〜51 を3枚に1枚だけ残す（同じ長さ＝3倍の間隔が4回続く）。"
+        "FPS の切り替えと区別できないので欠落として表示しない（時刻は実PTSのまま）",
+        {"capture_time_scale": 1, "known_undetected_source_n": [[41, 42], [44, 45], [47, 48], [50, 51]],
+         "expect": {"status": "container_only", "frames": 280, **_CFR, "vfr": True}},
+        ["-f", "lavfi", "-i", _SRC240,
+         "-vf", "select='not(between(n,41,52)*not(eq(mod(n-40,3),0)))'", "-fps_mode", "passthrough", *X264],
+    ),
+    "slowdown_drop": (
+        "【既知の限界】60fps の n=34 が欠落し、その直後の n=35 から 30fps に下がる。欠落の間隔（2/60）が"
+        "新しい30fpsの間隔と同じで、間に1/60の間隔が残らないので、原理的に区別できない",
+        {"capture_time_scale": 1, "known_undetected_source_n": [[34, 34]],
+         "expect": {"status": "container_only", "frames": 71, **_CFR, "vfr": True}},
+        ["-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=60:duration={DUR}",
+         "-vf", "setpts='if(lt(N,35),N,2*N-35)/(60*TB)',select='not(eq(n,34))'",
+         "-fps_mode", "passthrough", "-video_track_timescale", "90000", *X264],
+    ),
     "mov600_240_tagged": (
         "240fpsを time_base 1/600 の MOV に保存（間隔が 2,3 tick の交互）。撮影FPSメタデータあり",
         {"capture_time_scale": 1, "ext": "mov", "expect": {"status": "verified", "frames": 288, **_CFR}},

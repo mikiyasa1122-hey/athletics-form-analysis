@@ -271,21 +271,46 @@ def _require_pts(entry: dict[str, Any], label: str) -> int:
 GAP_WINDOW = 4   # 欠落の判定で比べる前後の間隔の数
 
 
-def _settled(iv: Fraction, window: list[Fraction], tick: Fraction) -> bool:
-    """window の間隔がおおむね iv と同じ長さで続いている（＝FPSが切り替わって落ち着いた）か。"""
-    if len(window) < 2:
-        return False
-    m = median(window)
-    return abs(m - iv) <= max(2 * tick, iv / 10)
+RATE_RUN_MIN = 3   # ほぼ同じ長さの間隔がこの数以上続けば「その間隔で撮影している区間」とみなす
+
+
+def _same_spacing(a: Fraction, b: Fraction, tick: Fraction) -> bool:
+    return abs(a - b) <= max(2 * tick, b / 10)
+
+
+def _rate_support(ivs: list[Fraction], i: int, tick: Fraction) -> int:
+    """i 番目の間隔と同じ長さの間隔が、前後にいくつ続くか。
+
+    より長い間隔（欠落）は飛び越えて数え、より短い間隔に当たったらそこで止める。
+    - 「30fps に切り替わった直後に欠落」でも、欠落の向こうの 30fps 区間まで数えられる。
+    - 「1枚おきに欠落」（64,128,64,128…）では、128 の両隣がすぐ短い間隔なので 1 しか数えない。
+    """
+    iv = ivs[i]
+    count = 1
+    for step in (-1, 1):
+        j = i + step
+        while 0 <= j < len(ivs) and count < RATE_RUN_MIN:
+            if ivs[j] < iv and not _same_spacing(ivs[j], iv, tick):
+                break   # より短い間隔 → ここで撮影間隔が変わっている
+            if _same_spacing(ivs[j], iv, tick):
+                count += 1
+            j += step
+    return count
 
 
 def _mark_gaps(frames: list[SourceFrame], decode_failed_pts: set[int] | None = None) -> list[SourceFrame]:
     """欠落の疑いを付ける。
 
-    基準は前後 GAP_WINDOW 個の間隔のうち最短のもの（基準間隔）。その1.5倍を超える間隔は欠落の候補になる。
-    ただし、その後（末尾なら前）の間隔が同じ長さで続いていれば、欠落ではなくFPSの切り替え（可変FPS）とみなす。
-    - 中央値と比べる方式だと、近い間隔で何度も欠落すると中央値が引き上げられて見逃す（レビュー B1）。
-    - 全体の中央値と比べる方式だと、可変FPSの遅い区間がすべて欠落に見える。
+    1. ほぼ同じ長さ（±2tick または ±10%）の間隔が、より短い間隔を挟まずに RATE_RUN_MIN 個以上続く区間は、
+       その間隔で撮影している区間（可変FPSの一部）とみなし、欠落にしない（_rate_support）。
+       FPS が上がる切り替えでも下がる切り替えでも同じに扱う。
+    2. それ以外の間隔は、前後 GAP_WINDOW 個の最短間隔の1.5倍を超えれば欠落とする。
+
+    これまでの方式とその失敗（F-0013）:
+    - 全体の中央値: 可変FPSの遅い区間がすべて欠落になる。
+    - 局所中央値: 近い間隔の複数欠落で中央値が引き上げられ、見逃す。
+    - 最短間隔＋「後ろが同じ長さで続くか」: FPS が上がる切り替えの手前を欠落と誤判定する。
+    限界: 同じ長さの欠落が RATE_RUN_MIN 回以上続くと、FPS の切り替えと区別できない（欠落と表示しない。時刻は実PTSのまま）。
     原本パケットはあるのに復号できなかったフレームが原因なら、撮影時の欠落とは区別して after_decode_failure とする。
     """
     timed = [f for f in frames if f.usable_for_timing]
@@ -296,17 +321,11 @@ def _mark_gaps(frames: list[SourceFrame], decode_failed_pts: set[int] | None = N
     failed = decode_failed_pts or set()
     marks: dict[int, str] = {}
     for i, iv in enumerate(ivs):
-        before = ivs[max(0, i - GAP_WINDOW):i]
-        after = ivs[i + 1:i + 1 + GAP_WINDOW]
-        neighbors = before + after
-        if not neighbors:
+        if _rate_support(ivs, i, tick) >= RATE_RUN_MIN:
+            continue   # その間隔で撮影している区間（可変FPSの一部）
+        neighbors = ivs[max(0, i - GAP_WINDOW):i] + ivs[i + 1:i + 1 + GAP_WINDOW]
+        if not neighbors or iv <= min(neighbors) * GAP_FACTOR:
             continue
-        base = min(neighbors)
-        if iv <= base * GAP_FACTOR:
-            continue
-        follow = after if len(after) >= 2 else before
-        if _settled(iv, follow, tick):
-            continue   # その長さで続いている → FPSの切り替え
         a, b = timed[i], timed[i + 1]
         explained = any(a.pts < p < b.pts for p in failed)
         marks[b.source_frame_id] = "after_decode_failure" if explained else "after_gap"

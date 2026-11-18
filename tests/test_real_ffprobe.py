@@ -73,6 +73,23 @@ class ManifestExpectationsTest(unittest.TestCase):
                     self.assertEqual(q["decode_failures"], e["decode_failures"])
                     self.assertEqual(q["after_decode_failure_frame_ids"], [])
 
+    def test_speedup_is_not_a_drop(self):
+        # 再レビュー B1: FPS が上がる切り替え（30→60、60→30→60）で遅い区間の末尾を欠落にしない
+        for name in ("vfr_30_60", "vfr_60_30_60"):
+            with self.subTest(clip=name):
+                q = build_frame_index(load(name)).quality_report()
+                self.assertEqual(q["gap_frame_ids"], [])
+                self.assertTrue(q["vfr"])
+
+    def test_known_limits_are_documented_not_hidden(self):
+        # 区別できないケースは manifest に「既知の限界」として書き、欠落として出ないことを固定する
+        limits = {n: c for n, c in manifest()["clips"].items() if c["truth"].get("known_undetected_source_n")}
+        self.assertEqual(set(limits), {"run4_drops240", "slowdown_drop"})
+        for name, clip in limits.items():
+            with self.subTest(clip=name):
+                self.assertIn("既知の限界", clip["description"])
+                self.assertEqual(build_frame_index(load(name)).quality_report()["gap_frame_ids"], [])
+
     def test_dropped_source_frames_map_to_gap_ids_and_times(self):
         # 欠落させた撮影フレーム番号 n から、欠落直後の原本IDと時刻を計算して一致を確かめる
         for name, clip in manifest()["clips"].items():
@@ -180,7 +197,8 @@ class EndToEndOnRealTimingTest(unittest.TestCase):
 
     def test_more_real_timing_shapes(self):
         # 近い間隔の複数欠落・比4のFPS切り替え・FPS切り替え直後の欠落・1/600 の MOV・カバー画像付き
-        for name in ("multi_drop240", "vfr_120_30", "vfr_drop", "mov600_240_tagged", "drop_edges240", "coverart"):
+        for name in ("multi_drop240", "vfr_120_30", "vfr_drop", "mov600_240_tagged", "drop_edges240", "coverart",
+                     "vfr_30_60", "vfr_60_30_60", "speedup_drop", "run4_drops240", "slowdown_drop"):
             with self.subTest(clip=name):
                 snap = analyze_clip(name, 1)
                 self.assert_events_contain_truth(snap)

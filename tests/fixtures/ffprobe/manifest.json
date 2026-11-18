@@ -170,6 +170,108 @@
     }
    }
   },
+  "vfr_30_60": {
+   "description": "可変FPS: 30fps（36枚）から60fps（36枚）へ上がる。明るい場所に出た想定。遅い区間の末尾を欠落にしない",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect": {
+     "status": "container_only",
+     "frames": 72,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "vfr_60_30_60": {
+   "description": "可変FPS: 60fps（30枚）→30fps（10枚）→60fps（32枚）",
+   "truth": {
+    "capture_time_scale": 1,
+    "expect": {
+     "status": "container_only",
+     "frames": 72,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "speedup_drop": {
+   "description": "30fps→60fps に上がる直前（30fps区間の n=34）に1枚欠落",
+   "truth": {
+    "capture_time_scale": 1,
+    "dropped_source_n": [
+     [
+      34,
+      34
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 71,
+     "gaps": [
+      34
+     ],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "run4_drops240": {
+   "description": "【既知の限界】240fpsで n=41〜51 を3枚に1枚だけ残す（同じ長さ＝3倍の間隔が4回続く）。FPS の切り替えと区別できないので欠落として表示しない（時刻は実PTSのまま）",
+   "truth": {
+    "capture_time_scale": 1,
+    "known_undetected_source_n": [
+     [
+      41,
+      42
+     ],
+     [
+      44,
+      45
+     ],
+     [
+      47,
+      48
+     ],
+     [
+      50,
+      51
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 280,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
+  "slowdown_drop": {
+   "description": "【既知の限界】60fps の n=34 が欠落し、その直後の n=35 から 30fps に下がる。欠落の間隔（2/60）が新しい30fpsの間隔と同じで、間に1/60の間隔が残らないので、原理的に区別できない",
+   "truth": {
+    "capture_time_scale": 1,
+    "known_undetected_source_n": [
+     [
+      34,
+      34
+     ]
+    ],
+    "expect": {
+     "status": "container_only",
+     "frames": 71,
+     "gaps": [],
+     "vfr": true,
+     "decode_failures": [],
+     "discarded": 0
+    }
+   }
+  },
   "mov600_240_tagged": {
    "description": "240fpsを time_base 1/600 の MOV に保存（間隔が 2,3 tick の交互）。撮影FPSメタデータあり",
    "truth": {
