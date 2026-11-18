@@ -3,70 +3,216 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>フォーム解析ビューア</title>
+  <title>フォーム解析</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
-    <h1>フォーム解析ビューア</h1>
-    <div class="loaders">
-      <label>デモ
-        <select id="demo-select" aria-label="デモ解析を選ぶ"></select>
-      </label>
-      <label class="file">解析結果JSONを開く
-        <input id="file-input" type="file" accept="application/json,.json">
-      </label>
-    </div>
+    <h1><a href="#/">フォーム解析</a></h1>
+    <nav aria-label="メニュー">
+      <a href="#/">動画一覧</a>
+      <a href="#/compare">比較</a>
+    </nav>
   </header>
 
-  <p id="load-error" class="error" role="alert" hidden></p>
+  <p id="banner" class="banner" role="alert" hidden></p>
 
-  <main class="layout">
-    <section class="player" aria-label="プレイヤー">
-      <canvas id="stage" width="1280" height="1000" aria-label="骨格の表示"></canvas>
-
-      <div class="readout" aria-live="polite">
-        <div><span class="k">原本フレームID</span><span id="ro-frame" class="v mono"></span></div>
-        <div><span class="k">PTS / time_base</span><span id="ro-pts" class="v mono"></span></div>
-        <div><span class="k">元動画時刻</span><span id="ro-time" class="v mono"></span></div>
-        <div><span class="k">再生の経過時間（表示上）</span><span id="ro-elapsed" class="v mono"></span></div>
-        <div><span class="k">骨格のフレームID</span><span id="ro-overlay" class="v mono"></span></div>
-        <div><span class="k">このフレームのイベント</span><span id="ro-events" class="v"></span></div>
-      </div>
-
-      <div class="controls">
-        <button id="btn-prev" type="button" title="1フレーム戻る（←）">◀ 1</button>
-        <button id="btn-play" type="button" title="再生 / 一時停止（Space）">再生</button>
-        <button id="btn-next" type="button" title="1フレーム進む（→）">1 ▶</button>
-        <label>再生倍率
-          <select id="rate-select" aria-label="再生倍率"></select>
+  <!-- 一覧・アップロード -->
+  <main id="view-home" class="view" hidden>
+    <section class="panel" aria-labelledby="h-upload">
+      <h2 id="h-upload">動画を追加</h2>
+      <form id="upload-form" class="grid-form">
+        <label class="wide">動画ファイル（MP4 / MOV など）
+          <input id="up-file" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.ogv" required>
         </label>
-        <input id="scrubber" type="range" min="0" max="0" value="0" aria-label="原本フレーム位置">
-        <button id="btn-unloop" type="button" hidden>ループ解除</button>
-      </div>
-      <p class="note">再生倍率は表示の速さだけを変えます。元動画時刻・フレームID・解析値は変わりません。</p>
+        <label>種目 <select id="up-discipline" required></select></label>
+        <label>撮影角度
+          <select id="up-view">
+            <option value="side">側面</option><option value="front">正面</option>
+            <option value="rear">後方</option><option value="oblique">斜め</option>
+          </select>
+        </label>
+        <label>進行方向
+          <select id="up-direction">
+            <option value="left_to_right">左 → 右</option><option value="right_to_left">右 → 左</option>
+          </select>
+        </label>
+        <label>練習日 <input id="up-date" type="date"></label>
+        <label>場所（任意） <input id="up-place" type="text" maxlength="200"></label>
+        <label>タイム・記録（任意） <input id="up-record" type="text" maxlength="200"></label>
+        <label>タグ（カンマ区切り） <input id="up-tags" type="text" maxlength="200" placeholder="加速, 試合"></label>
+        <label>撮影FPS（分かれば） <input id="up-fps" type="text" inputmode="decimal" maxlength="8" placeholder="240"></label>
+        <label class="check"><input id="up-slowmo" type="checkbox"> スロー書き出しした動画</label>
+        <label class="wide">メモ（任意） <textarea id="up-notes" rows="2" maxlength="2000"></textarea></label>
+        <p id="up-discipline-note" class="note wide"></p>
+        <div class="wide actions">
+          <button id="up-submit" type="submit">追加して解析する</button>
+          <progress id="up-progress" max="1" value="0" hidden></progress>
+          <span id="up-status" class="note" aria-live="polite"></span>
+        </div>
+      </form>
     </section>
 
-    <aside class="quality" aria-label="撮影と時間軸の品質">
+    <section class="panel" aria-labelledby="h-list">
+      <h2 id="h-list">動画一覧</h2>
+      <form id="filter-form" class="filters">
+        <label>検索 <input id="f-q" type="search" placeholder="ファイル名・メモ・場所"></label>
+        <label>種目 <select id="f-discipline"><option value="">すべて</option></select></label>
+        <label>期間 <input id="f-from" type="date"> 〜 <input id="f-to" type="date"></label>
+        <label>タグ <input id="f-tag" type="text"></label>
+        <button type="submit">絞り込む</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>練習日</th><th>種目</th><th>ファイル</th><th>タグ</th><th>解析</th><th></th></tr></thead>
+          <tbody id="video-list"></tbody>
+        </table>
+      </div>
+      <p id="list-empty" class="note" hidden>まだ動画がありません。上のフォームから追加してください。</p>
+    </section>
+  </main>
+
+  <!-- 解析 -->
+  <main id="view-video" class="view video-layout" hidden>
+    <section class="panel player-panel" aria-label="プレイヤー">
+      <div class="title-row">
+        <h2 id="v-title"></h2>
+        <span id="v-preview" class="tag" hidden>プレビュー</span>
+      </div>
+      <div id="job-box" class="job" hidden>
+        <span id="job-text" aria-live="polite"></span>
+        <progress id="job-progress" max="1" value="0"></progress>
+        <button id="job-cancel" type="button">取り消す</button>
+      </div>
+      <div id="no-analysis" class="empty" hidden>
+        <p id="no-analysis-text">まだ解析していません。</p>
+        <button id="run-performance" type="button">精度優先で解析（時間がかかる）</button>
+        <button id="run-balanced" type="button">軽量モデルで試す（プレビュー）</button>
+      </div>
+      <div id="player" hidden>
+        <canvas id="stage" width="1280" height="720" aria-label="映像と骨格"></canvas>
+        <div class="readout" aria-live="polite">
+          <div><span class="k">原本フレームID</span><span id="ro-frame" class="v mono"></span></div>
+          <div><span class="k">PTS / time_base</span><span id="ro-pts" class="v mono"></span></div>
+          <div><span class="k">元動画時刻</span><span id="ro-time" class="v mono"></span></div>
+          <div><span class="k">再生の経過時間（表示上）</span><span id="ro-elapsed" class="v mono"></span></div>
+          <div><span class="k">骨格のフレームID</span><span id="ro-overlay" class="v mono"></span></div>
+          <div><span class="k">このフレームのイベント</span><span id="ro-events" class="v"></span></div>
+        </div>
+        <div class="controls">
+          <button id="btn-prev" type="button" title="1フレーム戻る（←）">◀ 1</button>
+          <button id="btn-play" type="button" title="再生 / 一時停止（Space）">再生</button>
+          <button id="btn-next" type="button" title="1フレーム進む（→）">1 ▶</button>
+          <label>再生倍率 <select id="rate-select"></select></label>
+          <label class="check"><input id="show-skeleton" type="checkbox" checked> 骨格</label>
+          <label class="check"><input id="show-ground" type="checkbox" checked> 地面の線</label>
+          <input id="scrubber" type="range" min="0" max="0" value="0" aria-label="原本フレーム位置">
+          <button id="btn-unloop" type="button" hidden>ループ解除</button>
+        </div>
+        <p class="note">再生倍率は表示の速さだけを変えます。元動画時刻・フレームID・解析値は変わりません。</p>
+      </div>
+    </section>
+
+    <aside class="panel side-panel" aria-label="撮影条件と品質">
       <h2>撮影・時間軸</h2>
       <dl id="quality-list"></dl>
       <ul id="quality-notes" class="notes"></ul>
+      <h3>動画の情報</h3>
+      <form id="meta-form" class="grid-form small">
+        <label>種目 <select id="m-discipline"></select></label>
+        <label>撮影角度
+          <select id="m-view"><option value="side">側面</option><option value="front">正面</option>
+            <option value="rear">後方</option><option value="oblique">斜め</option></select>
+        </label>
+        <label>進行方向
+          <select id="m-direction"><option value="left_to_right">左 → 右</option>
+            <option value="right_to_left">右 → 左</option></select>
+        </label>
+        <label>練習日 <input id="m-date" type="date"></label>
+        <label>場所 <input id="m-place" type="text" maxlength="200"></label>
+        <label>タイム・記録 <input id="m-record" type="text" maxlength="200"></label>
+        <label>タグ <input id="m-tags" type="text" maxlength="200"></label>
+        <label>撮影FPS <input id="m-fps" type="text" maxlength="8"></label>
+        <label class="check"><input id="m-slowmo" type="checkbox"> スロー書き出し</label>
+        <label class="wide">メモ <textarea id="m-notes" rows="2" maxlength="2000"></textarea></label>
+        <div class="wide actions">
+          <button id="m-save" type="submit">保存して再計算</button>
+          <span id="m-status" class="note" aria-live="polite"></span>
+        </div>
+      </form>
+      <h3>地面の線</h3>
+      <p id="ground-text" class="note"></p>
+      <div class="actions">
+        <button id="ground-pick" type="button" aria-pressed="false">映像をクリックして指定</button>
+        <button id="ground-reset" type="button">自動推定に戻す</button>
+      </div>
+      <h3>データ</h3>
+      <div class="actions">
+        <a id="export-link" class="button" href="#">JSONを書き出す</a>
+        <button id="rerun" type="button">姿勢推定からやり直す</button>
+        <button id="delete-video" type="button" class="danger">動画を削除</button>
+      </div>
+      <h3>解析の履歴</h3>
+      <ul id="history-list" class="notes"></ul>
     </aside>
 
-    <section class="events" aria-label="イベント">
-      <h2>イベント（接地・離地）</h2>
-      <table>
-        <thead><tr><th>種類</th><th>足</th><th>時刻区間（元動画）</th><th>挟むフレーム</th><th>状態</th><th></th></tr></thead>
-        <tbody id="events-body"></tbody>
-      </table>
+    <section class="panel wide-panel" aria-labelledby="h-events">
+      <h2 id="h-events">イベント（接地・離地）</h2>
+      <div class="correction">
+        <label>訂正の理由 <input id="c-reason" type="text" maxlength="200" placeholder="例: 映像で足が地面に着いている"></label>
+        <label>追加する種類
+          <select id="c-type"><option value="foot_contact">接地</option><option value="toe_off">離地</option></select>
+        </label>
+        <label>足 <select id="c-side"><option value="left">左</option><option value="right">右</option></select></label>
+        <button id="c-add" type="button">表示中のフレームに追加</button>
+        <span id="c-status" class="note" aria-live="polite"></span>
+      </div>
+      <p class="note">イベントの時刻は「旧状態を最後に見たフレーム」と「新状態を最初に見たフレーム」の間の区間です。移動・追加では、表示中のフレームを「新状態を最初に見たフレーム」として記録します。訂正しても自動検出の結果は残ります。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>種類</th><th>足</th><th>時刻区間（元動画）</th><th>挟むフレーム</th><th>状態</th><th></th></tr></thead>
+          <tbody id="events-body"></tbody>
+        </table>
+      </div>
     </section>
 
-    <section class="metrics" aria-label="指標">
-      <h2>指標</h2>
-      <table>
-        <thead><tr><th>指標</th><th>足</th><th>値</th><th>状態</th><th>理由・制約</th><th>根拠</th></tr></thead>
-        <tbody id="metrics-body"></tbody>
-      </table>
+    <section class="panel wide-panel" aria-labelledby="h-metrics">
+      <h2 id="h-metrics">指標</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>指標</th><th>足</th><th>値</th><th>状態</th><th>理由・制約</th><th>根拠</th></tr></thead>
+          <tbody id="metrics-body"></tbody>
+        </table>
+      </div>
+      <h3>この種目で出していない指標</h3>
+      <ul id="unsupported-list" class="notes"></ul>
+      <h3>改善提案</h3>
+      <p id="feedback-text" class="note"></p>
+    </section>
+  </main>
+
+  <!-- 比較 -->
+  <main id="view-compare" class="view" hidden>
+    <section class="panel">
+      <h2>比較</h2>
+      <p class="note">同じ動画の2区間（区間を指定）か、2本の動画を比べます。差の量と不確実性だけを示し、良し悪しは判定しません。</p>
+      <form id="compare-form" class="grid-form">
+        <label>A の動画 <select id="cmp-a" required></select></label>
+        <label>A の区間（原本フレームID、任意） <input id="cmp-ra" type="text" placeholder="0-120"></label>
+        <label>B の動画 <select id="cmp-b"><option value="">（A と同じ動画）</option></select></label>
+        <label>B の区間（任意） <input id="cmp-rb" type="text" placeholder="121-240"></label>
+        <div class="wide actions"><button type="submit">比べる</button></div>
+      </form>
+      <div id="cmp-result" hidden>
+        <ul id="cmp-blocking" class="notes warn"></ul>
+        <ul id="cmp-warnings" class="notes"></ul>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>指標</th><th>A（中央値・件数）</th><th>B（中央値・件数）</th><th>B − A</th><th>読み方</th></tr></thead>
+            <tbody id="cmp-body"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
   </main>
 

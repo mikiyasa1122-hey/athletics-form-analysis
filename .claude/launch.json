@@ -14,6 +14,19 @@
         "web"
       ],
       "port": 8765
+    },
+    {
+      "name": "app",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "athform.server",
+        "--port",
+        "8766",
+        "--data",
+        "data"
+      ],
+      "port": 8766
     }
   ]
 }

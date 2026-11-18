@@ -75,7 +75,10 @@ DEFINITIONS = (CONTACT_TIME, CADENCE, KNEE_ANGLE, TRUNK_LEAN)
 # 種目として不自然な動き（スロー書き出しの疑い）を見分ける範囲。暫定値（DEC-016 で検証予定）
 #   min_cadence: これより遅いピッチは短距離として不自然（2倍スローでも引っかかる値）
 #   max_contact_time: これより長い接地時間は短距離として不自然
-PLAUSIBILITY = {"sprint_100m": {"min_cadence": 3.0, "max_contact_time": 0.25}}
+def _plausibility(discipline: str) -> dict[str, float] | None:
+    from .disciplines import CATALOG
+    d = CATALOG.get(discipline)
+    return d.plausibility if d else None
 
 
 @dataclass
@@ -263,7 +266,7 @@ def cadence(index: FrameIndex, events: list[MotionEvent], breaks: list[Observati
 def plausibility_findings(events: list[MotionEvent], breaks: list[ObservationBreak],
                           discipline: str) -> tuple[bool, list[str]]:
     """動画時間で見た動きの速さが種目として自然か。(確認できたか, 不自然だった点) を返す。"""
-    rule = PLAUSIBILITY.get(discipline)
+    rule = _plausibility(discipline)
     if rule is None:
         return False, []
     checked, problems = False, []
@@ -387,9 +390,36 @@ def trunk_leans(events: list[MotionEvent], poses: dict[int, PoseFrame], cond: Ca
     return out
 
 
-def cap_for_preview(results: list[MetricResult]) -> None:
+def apply_discipline_status(results: list[MetricResult], discipline: str) -> list[MetricResult]:
+    """種目×指標の公開状態で、出せる状態の上限を決める（§5 の supported / experimental / ...）。"""
+    from .disciplines import (EXPERIMENTAL, MANUAL_REVIEW, REQUIRES_CALIBRATION, SUPPORTED, UNSUPPORTED,
+                              CATALOG)
+    d = CATALOG[discipline]
+    out = []
+    for r in results:
+        status = d.metric_status.get(r.definition.metric_id, UNSUPPORTED)
+        r.quality["discipline_metric_status"] = status
+        if status == SUPPORTED:
+            out.append(r)
+            continue
+        if status in (UNSUPPORTED, REQUIRES_CALIBRATION):
+            r.status, r.value, r.interval, r.display = UNAVAILABLE, None, None, "判定不可"
+            r.reasons.append(f"{d.name} ではこの指標を出さない（{'未対応' if status == UNSUPPORTED else '要校正'}）")
+        elif status == EXPERIMENTAL:
+            if r.status == VALID:
+                r.status = ESTIMATED
+            r.limitations.append(f"{d.name} では試験的な指標（精度は未検証）")
+        elif status == MANUAL_REVIEW:
+            r.status = worse(r.status, REVIEW)
+            r.reasons.append(f"{d.name} では手動確認が前提の指標")
+        out.append(r)
+    return out
+
+
+def cap_for_preview(results: list[MetricResult],
+                    reason: str = "プレビュー解析（フレーム間引きあり）。正式な計測ではない") -> None:
     """間引きプレビューの結果は正式な精密指標として出さない（ARCH-014）。"""
     for r in results:
         if r.status == VALID:
             r.status = ESTIMATED
-        r.limitations.append("プレビュー解析（フレーム間引きあり）。正式な計測ではない")
+        r.limitations.append(reason)

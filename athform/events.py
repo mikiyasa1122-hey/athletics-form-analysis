@@ -62,8 +62,10 @@ class MotionEvent:
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    ground_y: float              # 画像上の地面の高さ（px、下向き正）。撮影条件として与える
+    ground_y: float              # 画像上の地面の高さ（px、下向き正）。x = ground_x0 での値
     contact_band_px: float = 6.0
+    ground_slope: float = 0.0    # 地面の傾き（dy/dx）。カメラが傾いている・奥行き方向に走る場合
+    ground_x0: float = 0.0
     min_confidence: float = 0.5
     # 観測の途切れがこれ以上続くと、接地または滞空が丸ごと隠れうる（短距離の最短局面 ≒ 0.08s より短く取る）。
     # 暫定値。DEC-016 で種目ごとに決め直す。
@@ -71,6 +73,7 @@ class DetectorConfig:
 
     def to_json(self) -> dict[str, Any]:
         return {"ground_y": self.ground_y, "contact_band_px": self.contact_band_px,
+                "ground_slope": self.ground_slope, "ground_x0": self.ground_x0,
                 "min_confidence": self.min_confidence, "max_unobserved_s": self.max_unobserved_s}
 
 
@@ -98,8 +101,9 @@ def foot_state(pose: PoseFrame | None, side: str, cfg: DetectorConfig) -> tuple[
     visible = [p for p in pts if p is not None]
     if len(visible) < 2:   # 足先・踵のどちらも見えないなら判定しない
         return None, None
-    lowest = max(p.y for p in visible)
-    return lowest >= cfg.ground_y - cfg.contact_band_px, min(p.confidence for p in visible)
+    low = max(visible, key=lambda p: p.y)
+    ground = cfg.ground_y + cfg.ground_slope * (low.x - cfg.ground_x0)
+    return low.y >= ground - cfg.contact_band_px, min(p.confidence for p in visible)
 
 
 @dataclass

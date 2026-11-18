@@ -1,0 +1,282 @@
+{
+  "run_id": "20261118-2032-functional-app",
+  "title": "functional-app",
+  "status": "in_progress",
+  "phase": "04_gate",
+  "created": "2026-11-18T20:32:10+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "S-0001",
+    "W-0003",
+    "W-0006",
+    "F-0003",
+    "F-0004",
+    "F-0007",
+    "F-0010"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "動画を追加すると、原本を改変せず保存し（SHA-256）、ffprobe で動画として読めるものだけ受け付ける（FR-VID-001/002/005, NFR-SEC-003）",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "動画でないファイル・未対応形式・時刻の読めない動画を受け付ける／失敗の残骸が残る",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "拡張子・種目・日付・未知項目の検証、失敗時に残骸なし",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_upload_validation"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "ローカル専用のサーバーとして、他サイトからの読み書き・パストラバーサルを防ぐ（NFR-SEC-002/005, S-0001）",
+      "risks": [
+        {
+          "id": "K2",
+          "text": "他サイトのページから書き込み・削除される（CSRF、DNSリバインディング）",
+          "verifications": [
+            {
+              "id": "V2",
+              "method": "Host・Origin・Content-Type・専用ヘッダー・OPTIONS の拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_host_origin_and_content_type_guards"
+            }
+          ]
+        },
+        {
+          "id": "K3",
+          "text": "ID やフレーム番号でデータフォルダの外を読まれる",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "../ やエンコードしたパス、不正なID・テストファイルが 404",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_path_traversal_and_bad_ids"
+            }
+          ]
+        },
+        {
+          "id": "K4",
+          "text": "解析データ由来の文字列が HTML として実行される（XSS）",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "app.js が innerHTML 等を使わず、参照IDがHTMLにある",
+              "command": "node --test web/tests/static.test.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "解析は非同期ジョブで、進み具合・取消・失敗理由が分かり、同じ動画を二重に実行しない（FR-VID-006, FR-TIME-015, ARCH-004/005）",
+      "risks": [
+        {
+          "id": "K5",
+          "text": "二重実行・取り消せない・失敗が黙って消える",
+          "verifications": [
+            {
+              "id": "V5",
+              "method": "二重実行の拒否と取消",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_duplicate_job_rejected_and_cancel"
+            },
+            {
+              "id": "V6",
+              "method": "姿勢推定なしの再計算は拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_reanalyze_requires_pose"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": true,
+      "text": "実際の動画の全原本フレームを提示順に復号し、索引と同じ枚数でなければ止める（FR-TIME-005, AC-014）",
+      "risks": [
+        {
+          "id": "K6",
+          "text": "復号した画像と原本フレームIDがずれ、骨格や指標が別のフレームに付く",
+          "verifications": [
+            {
+              "id": "V7",
+              "method": "実際の ffmpeg の出力で、可変FPS・欠落・破損・先頭カットでも索引と同じ枚数",
+              "command": "python3 -m unittest tests.test_realpose.DecodeTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R5",
+      "critical": true,
+      "text": "RTMPose の結果から解析対象の1人を追跡し（最初は最も大きい人、以降は近い人）、別人に乗り移らない。Halpe26 を共通スキーマに対応づける（FR-POSE-001〜003）",
+      "risks": [
+        {
+          "id": "K7",
+          "text": "隣のレーンの選手に乗り移る／点の対応を間違える",
+          "verifications": [
+            {
+              "id": "V8",
+              "method": "最大の人から開始、近い人を追う、大きく離れたら見失い扱い、低信頼は無視",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            },
+            {
+              "id": "V9",
+              "method": "Halpe26 の対応と信頼度の丸め",
+              "command": "python3 -m unittest tests.test_realpose.MappingTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R6",
+      "critical": true,
+      "text": "地面の線を足の最下点から推定し、推定できないときは指標を出さずに理由を示す。手動で上書きできる（FR-VID-007）",
+      "risks": [
+        {
+          "id": "K8",
+          "text": "地面の推定が外れて誤った接地を検出する／人物がいないと解析全体が失敗する",
+          "verifications": [
+            {
+              "id": "V10",
+              "method": "水平・傾いた地面の推定、足が見えないときの例外",
+              "command": "python3 -m unittest tests.test_realpose.GroundTest"
+            },
+            {
+              "id": "V11",
+              "method": "アップロードから解析・地面の推定・接地時間が真値を含む",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R7",
+      "critical": true,
+      "text": "全種目を登録し、種目×指標の公開状態（対応・試験的・手動確認・未対応）で出せる状態の上限を決める。改善提案は承認済みルールがないので出さない（§5, R-009, FR-FB-001）",
+      "risks": [
+        {
+          "id": "K9",
+          "text": "未検証の種目で精密値を出す／投擲で走動作の指標を出す",
+          "verifications": [
+            {
+              "id": "V12",
+              "method": "やり投で接地時間・ピッチが判定不可、角度は要確認",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_discipline_status_applied"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R8",
+      "critical": true,
+      "text": "軽量モデル（balanced）の結果は正式な精密指標として出さない（ARCH-014）",
+      "risks": [
+        {
+          "id": "K10",
+          "text": "プレビューの値が valid として出る",
+          "verifications": [
+            {
+              "id": "V13",
+              "method": "balanced では valid が出ない",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_balanced_mode_is_preview"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R9",
+      "critical": true,
+      "text": "手動訂正は推論なしで再計算し、自動検出を残し、不正な訂正は保存しない。再解析は別の版として残す（§7.4, AC-008/018, FR-TIME-014）",
+      "risks": [
+        {
+          "id": "K11",
+          "text": "訂正で自動検出が消える・不正な訂正が残る・履歴が上書きされる",
+          "verifications": [
+            {
+              "id": "V14",
+              "method": "訂正後の auto 層・版の数・不正訂正の拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R10",
+      "critical": true,
+      "text": "比較は互換性を先に確かめ、重大な不一致では数値の差を出さず、良し悪しを判定しない（FR-INTER-002/003, AC-005, FR-INTRA-007）",
+      "risks": [
+        {
+          "id": "K12",
+          "text": "撮影角度の違う動画の角度差を出す",
+          "verifications": [
+            {
+              "id": "V15",
+              "method": "正面と側面の比較で数値なし・理由あり",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_incompatible_comparison_has_no_numbers"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R11",
+      "critical": true,
+      "text": "削除は動画・派生物・姿勢・解析・DB行をまとめて消す。エクスポートできる（FR-HIST-005, AC-009）",
+      "risks": [
+        {
+          "id": "K13",
+          "text": "削除後にファイルや一覧が残る",
+          "verifications": [
+            {
+              "id": "V16",
+              "method": "削除後に 404 とフォルダなし、エクスポートが添付で返る",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12",
+      "critical": false,
+      "text": "これまでの時間軸・指標のテストが引き続き通る",
+      "risks": [
+        {
+          "id": "K14",
+          "text": "全種目対応・地面の傾きの追加で既存の判定が変わる",
+          "verifications": [
+            {
+              "id": "V17",
+              "method": "既存の全テスト",
+              "command": "python3 -m unittest tests.test_timebase tests.test_events tests.test_metrics tests.test_real_ffprobe"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": false,
+    "blocking_findings": 0,
+    "summary": ""
+  },
+  "memory_done": false,
+  "fix_iterations": 0,
+  "gate": null,
+  "stop_blocks": 0
+}

@@ -12,7 +12,8 @@ from typing import Any
 
 from . import ALGORITHM_VERSION, SNAPSHOT_SCHEMA_VERSION
 from .events import Correction, DetectorConfig, EventLayers, detect_events
-from .metrics import (CaptureConditions, MetricResult, cadence, cap_for_preview, contact_times,
+from . import disciplines
+from .metrics import (CaptureConditions, MetricResult, apply_discipline_status, cadence, cap_for_preview, contact_times,
                       knee_angles, plausibility_findings, trunk_leans)
 from .pose import PoseAdapter, PoseFrame
 from .timebase import FrameIndex, downgrade_capture_time
@@ -43,6 +44,7 @@ class AnalysisInput:
     detector: DetectorConfig
     conditions: CaptureConditions
     sampling: SamplingPolicy = field(default_factory=SamplingPolicy)
+    preview_reason: str = ""   # 軽量モデルなど、正式な精密指標として出さない理由（ARCH-014）
 
 
 def _select_frames(inp: AnalysisInput) -> list[int]:
@@ -100,6 +102,8 @@ def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:
 
 
 def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> dict[str, Any]:
+    if inp.conditions.discipline not in disciplines.CATALOG:
+        raise AnalysisError(f"未登録の種目: {inp.conditions.discipline}")
     poses, completeness = run_pose(inp)
     # 入力の索引は変更しない（同じ入力で何度でも同じ結果: FR-TIME-014）
     work_index = _subindex(inp.index, [f.source_frame_id for f in inp.index.frames])
@@ -123,8 +127,11 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
     metrics = time_metrics
     metrics += knee_angles(effective, poses, inp.conditions, inp.detector.min_confidence)
     metrics += trunk_leans(effective, poses, inp.conditions, inp.detector.min_confidence)
+    metrics = apply_discipline_status(metrics, inp.conditions.discipline)
     if inp.sampling.mode != ALL_SOURCE_FRAMES:
         cap_for_preview(metrics)
+    if inp.preview_reason:
+        cap_for_preview(metrics, inp.preview_reason)
     if inp.index.decode_check != "packets":
         for m in metrics:
             m.limitations.append("パケット情報がなく、復号できなかったフレームの有無を確認できない")
@@ -137,8 +144,11 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
         "model": inp.pose.model.to_json(),
         "detector": inp.detector.to_json(),
         "capture_conditions": inp.conditions.to_json(),
+        "discipline": disciplines.get(inp.conditions.discipline).to_json(),
+        "feedback": {"findings": [], "reason": "評価ルールが専門家に承認されていないため、改善提案は出さない（FR-FB-001, §8.3）"},
         "analysis_sampling_policy": inp.sampling.to_json(),
-        "preview": inp.sampling.mode != ALL_SOURCE_FRAMES,
+        "preview": inp.sampling.mode != ALL_SOURCE_FRAMES or bool(inp.preview_reason),
+        "preview_reason": inp.preview_reason,
         "frame_completeness": completeness,
         "capture_quality": work_index.quality_report(),
         "frames": [f.to_json() for f in work_index.frames],
