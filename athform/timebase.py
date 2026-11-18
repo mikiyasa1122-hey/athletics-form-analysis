@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from statistics import median
 from typing import Any
@@ -68,7 +68,8 @@ class FrameIndex:
     capture_fps: Fraction | None
     capture_time_status: str
     capture_time_notes: list[str] = field(default_factory=list)
-    decode_failures: list[int] = field(default_factory=list)  # 復号できなかった提示順番号
+    decode_failures: list[int] = field(default_factory=list)  # 復号できなかった原本フレームID（パケット基準）
+    decode_check: str = "unavailable"   # packets = パケットと突き合わせ済み / unavailable = 検出できない
 
     def by_id(self, source_frame_id: int) -> SourceFrame:
         frame = self._lookup().get(source_frame_id)
@@ -114,6 +115,7 @@ class FrameIndex:
             "gap_frame_ids": gaps,
             "duplicate_pts_frame_ids": dups,
             "decode_failures": list(self.decode_failures),
+            "decode_check": self.decode_check,
             "time_axis_valid": self.time_axis_valid,
         }
 
@@ -158,27 +160,23 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
         raise TimebaseError("time_base が取得できない")
     stream_index = stream.get("index", 0)
 
-    raw_frames = [f for f in probe.get("frames", [])
-                  if f.get("media_type", "video") == "video" and f.get("stream_index", stream_index) == stream_index]
+    raw_frames, raw_packets = _split_entries(probe, stream_index)
     if not raw_frames:
         raise TimebaseError("復号されたフレームがない")
 
+    # パケット（コンテナに記録された原本フレーム）があれば、そのPTS順で原本フレームIDを振る。
+    # 復号に失敗したフレームは ffprobe の frames から消えるだけなので、パケットとの差分で検出する。
+    packet_rank: dict[int, int] | None = None
+    if raw_packets:
+        packet_pts = sorted({_require_pts(p, f"パケット {i}") for i, p in enumerate(raw_packets)})
+        packet_rank = {pts: rank for rank, pts in enumerate(packet_pts)}
+
     frames: list[SourceFrame] = []
-    decode_failures: list[int] = []
     seen_pts: set[int] = set()
-    first_pts: int | None = None
+    first_pts: int | None = min(packet_rank) if packet_rank else None
     last_pts: int | None = None
     for i, rf in enumerate(raw_frames):
-        if rf.get("decode_error"):
-            decode_failures.append(i)
-            continue
-        pts_val = rf.get("pts", rf.get("best_effort_timestamp"))
-        if pts_val is None or pts_val == "N/A":
-            raise TimebaseError(f"提示順 {i} のフレームにPTSがない。固定FPSを仮定して続行しない")
-        try:
-            pts = int(pts_val)
-        except (TypeError, ValueError) as exc:
-            raise TimebaseError(f"提示順 {i} のPTSが整数でない: {pts_val!r}") from exc
+        pts = _require_pts(rf, f"提示順 {i} のフレーム")
         if first_pts is None:
             first_pts = pts
         flags: list[str] = []
@@ -189,8 +187,11 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
         seen_pts.add(pts)
         if "duplicate_pts" not in flags and "non_monotonic" not in flags:
             last_pts = pts
+        if packet_rank is not None and pts not in packet_rank:
+            flags.append("no_matching_packet")
+        source_id = packet_rank[pts] if packet_rank is not None and pts in packet_rank and "duplicate_pts" not in flags else None
         frames.append(SourceFrame(
-            source_frame_id=i,
+            source_frame_id=-1 if source_id is None else source_id,
             presentation_index=i,
             pts=pts,
             time_base=time_base,
@@ -198,12 +199,54 @@ def build_frame_index(probe: dict[str, Any], *, declared_capture_fps: str | None
             flags=tuple(flags),
         ))
 
+    if packet_rank is None:
+        frames = [replace(f, source_frame_id=f.presentation_index) for f in frames]
+        decode_failures: list[int] = []
+        decode_check = "unavailable"
+    else:
+        # パケットに対応しないフレーム（重複PTS等）には、パケット数の後ろから衝突しないIDを振る
+        extra = len(packet_rank)
+        fixed = []
+        for f in frames:
+            if f.source_frame_id < 0:
+                f = replace(f, source_frame_id=extra)
+                extra += 1
+            fixed.append(f)
+        frames = fixed
+        decoded = {f.pts for f in frames}
+        decode_failures = [rank for pts, rank in sorted(packet_rank.items(), key=lambda kv: kv[1]) if pts not in decoded]
+        decode_check = "packets"
+
     frames = _mark_gaps(frames)
     nominal = parse_fraction(stream.get("avg_frame_rate")) or parse_fraction(stream.get("r_frame_rate"))
     index = FrameIndex(frames=frames, time_base=time_base, nominal_fps=nominal, capture_fps=None,
-                       capture_time_status=UNKNOWN, decode_failures=decode_failures)
+                       capture_time_status=UNKNOWN, decode_failures=decode_failures, decode_check=decode_check)
     _resolve_capture_time(index, probe, stream, declared_capture_fps, declared_slowmo)
     return index
+
+
+def _split_entries(probe: dict[str, Any], stream_index: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """ffprobe の frames / packets（または -show_packets -show_frames 併用時の packets_and_frames）を分ける。"""
+    frames = list(probe.get("frames", []))
+    packets = list(probe.get("packets", []))
+    for entry in probe.get("packets_and_frames", []):
+        (packets if entry.get("type") == "packet" else frames).append(entry)
+
+    def mine(e: dict[str, Any]) -> bool:
+        return e.get("media_type", "video") == "video" and e.get("stream_index", stream_index) == stream_index
+
+    return [f for f in frames if mine(f)], [p for p in packets if mine(p) or ("codec_type" in p and p["codec_type"] == "video")]
+
+
+def _require_pts(entry: dict[str, Any], label: str) -> int:
+    # best_effort_timestamp は ffprobe が仮定FPSなどから推測した値になりうるので使わない（NFR-TIME-004）
+    pts_val = entry.get("pts")
+    if pts_val is None or pts_val == "N/A":
+        raise TimebaseError(f"{label}にPTSがない。推測した時刻や固定FPSを仮定して続行しない")
+    try:
+        return int(pts_val)
+    except (TypeError, ValueError) as exc:
+        raise TimebaseError(f"{label}のPTSが整数でない: {pts_val!r}") from exc
 
 
 def _mark_gaps(frames: list[SourceFrame]) -> list[SourceFrame]:

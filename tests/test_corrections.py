@@ -53,10 +53,39 @@ class RecomputeTest(unittest.TestCase):
         contact, toe = first(base, "right", "foot_contact"), first(base, "right", "toe_off")
         snap = run(SPEC, [Correction(action="delete", event_id=toe["event_id"], **WHO)])
         m = next(m for m in metrics(snap, "contact_time") if contact["event_id"] in m["evidence_refs"]["event_ids"])
-        self.assertNotEqual(m["value"], None if m["status"] != "unavailable" else 0)
-        # 次の離地まで飛ぶか判定不可。いずれにせよ元の値のままではない
-        orig = next(x for x in metrics(base, "contact_time") if contact["event_id"] in x["evidence_refs"]["event_ids"])
-        self.assertNotEqual(m["value"], orig["value"])
+        # 離地を消すと、その接地の次は同じ足の接地なので接地時間は組めない
+        self.assertEqual(m["status"], "unavailable")
+        self.assertIsNone(m["value"])
+        self.assertTrue(m["reasons"])
+
+    def test_out_of_order_correction_flagged(self):
+        # 飛行中に同じ足の接地を追加すると、接地/離地が交互でなくなる → 要確認（レビュー N3）
+        base = run(SPEC)
+        contact = first(base, "right", "foot_contact")
+        snap = run(SPEC, [Correction(action="add", event_type="foot_contact", side="right",
+                                     after_frame_id=contact["evidence_frame_id"] + 5, **WHO)])
+        flagged = [e for e in snap["events"]["effective"] if "同じ足で接地と離地が交互になっていない" in e["quality_reasons"]]
+        self.assertGreaterEqual(len(flagged), 2)
+        for m in metrics(snap, "contact_time"):
+            if set(m["evidence_refs"]["event_ids"]) & {e["event_id"] for e in flagged}:
+                self.assertNotEqual(m["status"], "valid")
+        self.assertNotEqual(metrics(snap, "cadence")[0]["status"], "valid")
+
+    def test_angle_on_tracking_lost_frame_unavailable(self):
+        base = run(SPEC)
+        contact = first(base, "right", "foot_contact")
+        target = contact["evidence_frame_id"] + 2
+
+        def lost(pose):
+            for f in pose["frames"]:
+                if f["source_frame_id"] == target:
+                    f["flags"].append("tracking_lost")
+        snap = run(SPEC, [Correction(action="move", event_id=contact["event_id"], after_frame_id=target, **WHO)],
+                   pose_edit=lost)
+        knee = [m for m in metrics(snap, "knee_angle_at_contact") if target in m["evidence_refs"]["frame_ids"]]
+        self.assertEqual(len(knee), 1)
+        self.assertEqual(knee[0]["status"], "unavailable")
+        self.assertIsNone(knee[0]["value"])
 
     def test_add_event(self):
         snap = run(SPEC, [Correction(action="add", event_type="foot_contact", side="left", after_frame_id=3, **WHO)])
@@ -82,6 +111,8 @@ class InvalidCorrectionTest(unittest.TestCase):
 
     def test_duplicate_pts_frame_rejected(self):
         def dup(probe):
+            # パケット情報なし（原本IDは提示順）で、提示順20のフレームが19と同じPTSを持つ
+            del probe["packets"]
             probe["frames"][20]["pts"] = probe["frames"][19]["pts"]
         c = Correction(action="add", event_type="foot_contact", side="left", after_frame_id=20, **WHO)
         with self.assertRaises(CorrectionError):

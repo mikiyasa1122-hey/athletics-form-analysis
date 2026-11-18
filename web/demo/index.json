@@ -12,6 +12,10 @@
   "label": "可変フレームレート＋一部遮蔽"
  },
  {
+  "file": "sprint-long-occlusion.json",
+  "label": "240fps・1歩分を覆う遮蔽と復号失敗1枚"
+ },
+ {
   "file": "sprint-slowmo-export.json",
   "label": "240fps撮影を30fpsタイムラインに書き出したスロー動画（メタデータなし）"
  }

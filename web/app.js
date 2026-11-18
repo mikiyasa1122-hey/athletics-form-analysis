@@ -118,6 +118,8 @@
       ["可変FPS", q.vfr ? "あり" : "なし"],
       ["欠落の疑い", (q.gap_frame_ids || []).length + " 箇所"],
       ["重複PTS", (q.duplicate_pts_frame_ids || []).length + " 枚"],
+      ["復号失敗", c.decode_check === "packets" ? (c.decode_failed_source_frame_ids || []).length + " 枚" : "確認できない（パケット情報なし）"],
+      ["観測の途切れ", ((model.snapshot.events && model.snapshot.events.observation_breaks) || []).length + " 箇所（またいだ指標は出さない）"],
       ["解析方式", model.snapshot.preview ? "プレビュー（間引きあり）" : "全原本フレーム（精度優先）"],
       ["解析フレーム", (c.analyzed_frame_count ?? "—") + " / " + (c.decoded_frame_count ?? "—") + "（推定失敗 " + (c.pose_failed_frame_ids || []).length + "）"],
       ["モデル", model.snapshot.model ? model.snapshot.model.model_id + " " + model.snapshot.model.weights_version : "—"],

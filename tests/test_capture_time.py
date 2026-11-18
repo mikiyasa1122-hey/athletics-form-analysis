@@ -46,6 +46,29 @@ class PlausibilityTest(unittest.TestCase):
         knees = metrics(snap, "knee_angle_at_contact")
         self.assertTrue(knees and all(m["status"] == "valid" for m in knees))
 
+    def test_short_untagged_slowmo_not_reported_in_seconds(self):
+        # 1〜2歩だけの短いスロー書き出し（レビュー B2）。接地時間の妥当性で見抜くか、少なくとも精密値にしない
+        snap = run(CaptureSpec(capture_fps=240, container_time_scale=8.0, duration=0.3))
+        for m in time_metrics(snap):
+            self.assertNotIn(m["status"], ("valid", "estimated"))
+
+    def test_2x_untagged_slowmo_detected(self):
+        # 2倍スローでも、短距離として不自然なピッチ・接地時間で気づく（レビュー N6）
+        snap = run(CaptureSpec(capture_fps=240, container_time_scale=2.0))
+        self.assertEqual(snap["capture_quality"]["capture_time_status"], "slowmo_suspected")
+        for m in time_metrics(snap):
+            self.assertEqual(m["status"], "unavailable")
+
+    def test_short_normal_clip_checked_by_contact_time(self):
+        # 接地1回分だけの通常速度の素材でも、接地時間で速さの妥当性を確かめられる → 推定値として出す
+        snap = run(CaptureSpec(capture_fps=240, duration=0.16))
+        self.assertEqual(snap["capture_quality"]["capture_time_status"], "container_only")
+        vals = [m for m in metrics(snap, "contact_time") if m["value"] is not None]
+        self.assertEqual(len(vals), 1)
+        self.assertEqual(vals[0]["status"], "estimated")
+        # ピッチは接地が足りず判定不可（妥当性の確認には使っていない）
+        self.assertEqual(metrics(snap, "cadence")[0]["status"], "unavailable")
+
     def test_normal_speed_not_flagged(self):
         snap = run(CaptureSpec(capture_fps=60))
         self.assertEqual(snap["capture_quality"]["capture_time_status"], "container_only")

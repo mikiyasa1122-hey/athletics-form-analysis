@@ -2,7 +2,7 @@
   "run_id": "20261118-1916-vertical-slice-core",
   "title": "vertical-slice-core",
   "status": "in_progress",
-  "phase": "04_gate",
+  "phase": "05_fix",
   "created": "2026-11-18T19:16:30+09:00",
   "awaiting_human": false,
   "question": "",
@@ -61,6 +61,17 @@
               "command": "python3 -m unittest tests.test_timebase.ExactTimeTest"
             }
           ]
+        },
+        {
+          "id": "K33",
+          "text": "best_effort_timestamp など ffprobe が推測した時刻を使う（レビューN2）",
+          "verifications": [
+            {
+              "id": "V33",
+              "method": "PTSのないフレーム・パケットは best_effort があっても拒否",
+              "command": "python3 -m unittest tests.test_timebase.InvalidInputTest"
+            }
+          ]
         }
       ]
     },
@@ -101,6 +112,17 @@
               "command": "python3 -m unittest tests.test_capture_time.DeclaredTest"
             }
           ]
+        },
+        {
+          "id": "K30",
+          "text": "接地3回未満の短いスロー書き出し・2倍スローを実時間として扱う（レビューB2, N6）",
+          "verifications": [
+            {
+              "id": "V30",
+              "method": "短い8倍スロー・2倍スローで秒単位の指標が valid/estimated にならない、通常の短い素材は推定値",
+              "command": "python3 -m unittest tests.test_capture_time.PlausibilityTest"
+            }
+          ]
         }
       ]
     },
@@ -138,6 +160,17 @@
             {
               "id": "V10",
               "method": "遮蔽・ブラーを挟むイベントがreview_requiredになり区間が広がる",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest"
+            }
+          ]
+        },
+        {
+          "id": "K28",
+          "text": "長い遮蔽・欠落で1周期が丸ごと消え、同じ足のイベントが誤ってつながる（レビューB1）",
+          "verifications": [
+            {
+              "id": "V28",
+              "method": "1歩分を覆う遮蔽・欠落で観測の途切れを記録し、またぐ指標を判定不可にし、全区間が真値を含む",
               "command": "python3 -m unittest tests.test_events.UnobservedTest"
             }
           ]
@@ -181,6 +214,17 @@
               "command": "python3 -m unittest tests.test_metrics.MetadataCompletenessTest"
             }
           ]
+        },
+        {
+          "id": "K29",
+          "text": "ピッチが左右交互を確認せず、接地の見落とし・重複で誤る／訂正後の順序不整合（レビューB1, N3）",
+          "verifications": [
+            {
+              "id": "V29",
+              "method": "交互でない訂正で該当イベントと接地時間・ピッチが要確認、遮蔽フレームの角度は判定不可",
+              "command": "python3 -m unittest tests.test_corrections.RecomputeTest"
+            }
+          ]
         }
       ]
     },
@@ -210,6 +254,28 @@
               "command": "python3 -m unittest tests.test_analysis.PreviewTest"
             }
           ]
+        },
+        {
+          "id": "K32",
+          "text": "実際のffprobe出力では復号失敗がフレームの欠落としてしか現れず、検出できない・IDが詰まる（レビューB4）",
+          "verifications": [
+            {
+              "id": "V32",
+              "method": "パケットとフレームの差分で復号失敗を検出し、IDを詰めない（packets／packets_and_frames形式、復号順パケット）",
+              "command": "python3 -m unittest tests.test_timebase.DecodeFailureTest"
+            }
+          ]
+        },
+        {
+          "id": "K34",
+          "text": "プレビューで推定失敗フレームを索引から外し、イベントを確かなものとして扱う（レビューN4）",
+          "verifications": [
+            {
+              "id": "V34",
+              "method": "プレビューで推定失敗フレームを挟むイベントが要確認",
+              "command": "python3 -m unittest tests.test_analysis.PreviewTest"
+            }
+          ]
         }
       ]
     },
@@ -236,6 +302,17 @@
             {
               "id": "V17",
               "method": "複製・欠落・補間を含むプロキシでframe_accurate=falseと各フレームの種別",
+              "command": "python3 -m unittest tests.test_derivative.ProxyMappingTest"
+            }
+          ]
+        },
+        {
+          "id": "K31",
+          "text": "整数倍補間のプロキシで補間フレームが許容幅に入り原本扱いされる（レビューB3）",
+          "verifications": [
+            {
+              "id": "V31",
+              "method": "×2・×4補間で中間フレームがすべてgenerated、time_base丸めは許容",
               "command": "python3 -m unittest tests.test_derivative.ProxyMappingTest"
             }
           ]
@@ -366,6 +443,17 @@
               "command": "python3 -m unittest tests.test_analysis.ReproducibilityTest"
             }
           ]
+        },
+        {
+          "id": "K35",
+          "text": "別の動画の probe とハッシュが結び付けられる（レビューN7）",
+          "verifications": [
+            {
+              "id": "V35",
+              "method": "format.size とファイルサイズが一致しない・size がない probe を拒否",
+              "command": "python3 -m unittest tests.test_cli.CliRunTest"
+            }
+          ]
         }
       ]
     },
@@ -389,42 +477,42 @@
     }
   ],
   "review": {
-    "done": false,
-    "blocking_findings": 0,
-    "summary": ""
+    "done": true,
+    "blocking_findings": 4,
+    "summary": "fix_required: B1 長い遮蔽/欠落で1歩分が消えvalidの誤値, B2 短いスロー書き出しで妥当性チェック不発, B3 プロキシ許容幅が広く補間フレームを原本扱い, B4 実ffprobe出力で復号失敗を検出できない。N1-N10は非blocking"
   },
   "memory_done": false,
-  "fix_iterations": 0,
+  "fix_iterations": 1,
   "gate": {
-    "ran_at": "2026-11-18T19:29:43+09:00",
-    "finished_epoch": 1794997783.9622335,
-    "stamp": "20261118-192928",
+    "ran_at": "2026-11-18T19:44:54+09:00",
+    "finished_epoch": 1794998694.512828,
+    "stamp": "20261118-194434",
     "checks_pass": true,
     "results": {
       "checks": {
         "compile": {
           "pass": true,
           "exit": 0,
-          "sec": 0.33,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-check-compile.log"
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-check-compile.log"
         },
         "js-syntax": {
           "pass": true,
           "exit": 0,
-          "sec": 0.14,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-check-js-syntax.log"
+          "sec": 0.13,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-check-js-syntax.log"
         },
         "test": {
           "pass": true,
           "exit": 0,
-          "sec": 2.54,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-check-test.log"
+          "sec": 3.13,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-check-test.log"
         },
         "test-js": {
           "pass": true,
           "exit": 0,
-          "sec": 0.68,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-check-test-js.log"
+          "sec": 0.67,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-check-test-js.log"
         }
       },
       "verifications": {
@@ -432,163 +520,211 @@
           "pass": true,
           "exit": 0,
           "sec": 0.36,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V1.log"
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V1.log"
         },
         "V2": {
           "pass": true,
           "exit": 0,
-          "sec": 0.4,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V2.log"
+          "sec": 0.38,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V2.log"
         },
         "V3": {
           "pass": true,
           "exit": 0,
-          "sec": 0.36,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V3.log"
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V3.log"
         },
         "V4": {
           "pass": true,
           "exit": 0,
-          "sec": 1.37,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V4.log"
+          "sec": 1.62,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V4.log"
+        },
+        "V33": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V33.log"
         },
         "V5": {
           "pass": true,
           "exit": 0,
-          "sec": 0.39,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V5.log"
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V5.log"
         },
         "V6": {
           "pass": true,
           "exit": 0,
           "sec": 0.39,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V6.log"
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V6.log"
         },
         "V7": {
           "pass": true,
           "exit": 0,
-          "sec": 0.4,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V7.log"
+          "sec": 0.39,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V7.log"
+        },
+        "V30": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.37,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V30.log"
         },
         "V8": {
           "pass": true,
           "exit": 0,
-          "sec": 0.42,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V8.log"
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V8.log"
         },
         "V9": {
           "pass": true,
           "exit": 0,
-          "sec": 0.37,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V9.log"
+          "sec": 0.34,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V9.log"
         },
         "V10": {
           "pass": true,
           "exit": 0,
-          "sec": 0.39,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V10.log"
+          "sec": 0.42,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V10.log"
+        },
+        "V28": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.46,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V28.log"
         },
         "V11": {
           "pass": true,
           "exit": 0,
           "sec": 0.41,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V11.log"
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V11.log"
         },
         "V12": {
           "pass": true,
           "exit": 0,
-          "sec": 0.44,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V12.log"
+          "sec": 0.45,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V12.log"
         },
         "V13": {
           "pass": true,
           "exit": 0,
-          "sec": 0.41,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V13.log"
+          "sec": 0.4,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V13.log"
+        },
+        "V29": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.55,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V29.log"
         },
         "V14": {
           "pass": true,
           "exit": 0,
           "sec": 0.38,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V14.log"
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V14.log"
         },
         "V15": {
           "pass": true,
           "exit": 0,
-          "sec": 0.38,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V15.log"
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V15.log"
+        },
+        "V32": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.35,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V32.log"
+        },
+        "V34": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V34.log"
         },
         "V16": {
           "pass": true,
           "exit": 0,
-          "sec": 0.32,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V16.log"
+          "sec": 0.3,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V16.log"
         },
         "V17": {
           "pass": true,
           "exit": 0,
-          "sec": 0.32,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V17.log"
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V17.log"
+        },
+        "V31": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V31.log"
         },
         "V18": {
           "pass": true,
           "exit": 0,
-          "sec": 0.38,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V18.log"
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V18.log"
         },
         "V19": {
           "pass": true,
           "exit": 0,
-          "sec": 0.63,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V19.log"
+          "sec": 0.65,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V19.log"
         },
         "V20": {
           "pass": true,
           "exit": 0,
-          "sec": 0.64,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V20.log"
+          "sec": 0.65,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V20.log"
         },
         "V21": {
           "pass": true,
           "exit": 0,
-          "sec": 0.62,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V21.log"
+          "sec": 0.63,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V21.log"
         },
         "V22": {
           "pass": true,
           "exit": 0,
-          "sec": 0.17,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V22.log"
+          "sec": 0.16,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V22.log"
         },
         "V23": {
           "pass": true,
           "exit": 0,
-          "sec": 0.43,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V23.log"
+          "sec": 0.41,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V23.log"
         },
         "V24": {
           "pass": true,
           "exit": 0,
-          "sec": 0.46,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V24.log"
+          "sec": 0.51,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V24.log"
         },
         "V25": {
           "pass": true,
           "exit": 0,
-          "sec": 0.47,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V25.log"
+          "sec": 0.45,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V25.log"
         },
         "V26": {
           "pass": true,
           "exit": 0,
-          "sec": 0.39,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V26.log"
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V26.log"
+        },
+        "V35": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.52,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V35.log"
         },
         "V27": {
           "pass": true,
           "exit": 0,
-          "sec": 0.51,
-          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-192928-verify-V27.log"
+          "sec": 0.52,
+          "log": ".aq-dlc\\runs\\20261118-1916-vertical-slice-core\\gate\\20261118-194434-verify-V27.log"
         }
       }
     }

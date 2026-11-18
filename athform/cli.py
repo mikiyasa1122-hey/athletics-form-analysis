@@ -28,9 +28,11 @@ Runner = Callable[[list[str]], str]
 
 def ffprobe_command(video: str) -> list[str]:
     # -show_frames は提示順に復号済みフレームを返す。間引きはしない（FR-TIME-005）
+    # -show_packets はコンテナ上の全フレームのPTS。復号できなかったフレームを差分で見つけるのに使う
+    # （実機の FFmpeg での確認はまだ。packets_and_frames 形式でも読めるようにしてある）
     return ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_format",
-            "-show_entries", "frame=media_type,stream_index,pts,pkt_dts,best_effort_timestamp",
-            "-show_frames", "-of", "json", video]
+            "-show_entries", "frame=media_type,stream_index,pts,pkt_dts:packet=codec_type,stream_index,pts,dts",
+            "-show_packets", "-show_frames", "-of", "json", video]
 
 
 def _default_runner(cmd: list[str]) -> str:
@@ -43,6 +45,15 @@ def probe_video(video: str, runner: Runner = _default_runner) -> dict[str, Any]:
     if not os.path.isfile(video):
         raise SystemExit(f"動画がない: {video}")
     return json.loads(runner(ffprobe_command(video)))
+
+
+def check_probe_matches_video(probe: dict[str, Any], video: str) -> None:
+    """別の動画の probe を渡していないか確かめる（ffprobe の format.size とファイルサイズ）。"""
+    size = (probe.get("format") or {}).get("size")
+    if size is None:
+        raise SystemExit("probe に format.size がない。`athform probe` で作った probe を使う")
+    if int(size) != os.path.getsize(video):
+        raise SystemExit(f"probe（{size} bytes）と動画（{os.path.getsize(video)} bytes）が一致しない。別の動画の probe の可能性")
 
 
 def _load(path: str) -> Any:
@@ -62,6 +73,9 @@ DEMOS = {
     "sprint-30fps": ("30fps（時間分解能が粗い）", CaptureSpec(capture_fps=30)),
     "sprint-vfr": ("可変フレームレート＋一部遮蔽", CaptureSpec(capture_fps=120, vfr_jitter=True,
                                                     occluded_frames={40, 41}, blurred_frames={70})),
+    "sprint-long-occlusion": ("240fps・1歩分を覆う遮蔽と復号失敗1枚",
+                              CaptureSpec(capture_fps=240, write_capture_fps_tag=True,
+                                          occluded_frames=set(range(84, 172)), decode_fail_frames={30})),
     "sprint-slowmo-export": ("240fps撮影を30fpsタイムラインに書き出したスロー動画（メタデータなし）",
                              CaptureSpec(capture_fps=240, container_time_scale=8.0)),
 }
@@ -123,9 +137,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.preview_every:
             sampling = SamplingPolicy("preview_every_nth", args.preview_every, "CLIでプレビュー指定")
         corrections = [Correction.from_json(c) for c in _load(args.corrections)] if args.corrections else []
+        probe = _load(args.probe)
+        if args.video:
+            check_probe_matches_video(probe, args.video)
         inp = AnalysisInput(
             source_video_hash=file_sha256(args.video) if args.video else args.video_hash,
-            index=build_frame_index(_load(args.probe), declared_capture_fps=args.capture_fps,
+            index=build_frame_index(probe, declared_capture_fps=args.capture_fps,
                                     declared_slowmo=args.slowmo),
             pose=FixturePoseAdapter(_load(args.pose)),
             detector=DetectorConfig(ground_y=args.ground_y),

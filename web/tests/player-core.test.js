@@ -31,6 +31,9 @@ test("全フレームで表示フレームID・PTS・骨格が同じ原本フレ
       assert.equal(v.frameId, src.source_frame_id);
       assert.equal(v.pts, src.pts);
       assert.equal(v.sourceTime, src.t);
+      const hasPose = snap.pose_raw.some((p) => p.source_frame_id === src.source_frame_id);
+      // 骨格がある原本フレームでは必ず表示し、そのIDは表示中のフレームと一致する
+      assert.equal(v.overlay !== null, hasPose, `frame ${v.frameId}`);
       if (v.overlay) assert.equal(v.overlayFrameId, v.frameId);
       s = PC.step(model, s, 1);
     }

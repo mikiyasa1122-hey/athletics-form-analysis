@@ -42,6 +42,8 @@ class ResolutionGateTest(unittest.TestCase):
         self.assertEqual(format_with_resolution(0.1, 0.0667, 0.1333, "s"), "0.10 s（範囲 0.07〜0.13）")
         self.assertEqual(format_with_resolution(0.1, 0.0958, 0.1042, "s"), "0.100 s（範囲 0.096〜0.104）")
         self.assertEqual(format_with_resolution(4.5, 3.0, 6.0, "steps/s"), "4 steps/s（範囲 3〜6）")
+        # 半幅が10以上なら1の位まで丸め、分解能より細かい桁を出さない（レビュー N10）
+        self.assertEqual(format_with_resolution(123.0, 100.0, 146.0, "deg"), "120 deg（範囲 100〜150）")
 
 
 class PerMetricGateTest(unittest.TestCase):

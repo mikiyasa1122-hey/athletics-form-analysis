@@ -12,7 +12,8 @@
  "detector": {
   "ground_y": 900.0,
   "contact_band_px": 6.0,
-  "min_confidence": 0.5
+  "min_confidence": 0.5,
+  "max_unobserved_s": 0.06
  },
  "capture_conditions": {
   "camera_view": "side",
@@ -28,7 +29,8 @@
  "frame_completeness": {
   "source_frame_count": 288,
   "decoded_frame_count": 288,
-  "decode_failed_presentation_indexes": [],
+  "decode_failed_source_frame_ids": [],
+  "decode_check": "packets",
   "selected_frame_count": 288,
   "analyzed_frame_count": 288,
   "pose_failed_frame_ids": [],
@@ -40,7 +42,7 @@
   "capture_fps": null,
   "capture_time_status": "slowmo_suspected",
   "capture_time_notes": [
-   "動画時間上のピッチ 0.57 歩/秒 が sprint_100m として不自然に低い（下限 2.0）。スロー書き出しの疑い"
+   "動画時間上のピッチ 0.57 歩/秒 が sprint_100m として不自然に低い（下限 3.0）。スロー書き出しの疑い"
   ],
   "interval_s": {
    "min": 0.03333333333333333,
@@ -51,6 +53,7 @@
   "gap_frame_ids": [],
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
+  "decode_check": "packets",
   "time_axis_valid": true
  },
  "frames": [
@@ -23568,7 +23571,8 @@
     "quality_reasons": [],
     "model_score": 0.85
    }
-  ]
+  ],
+  "observation_breaks": []
  },
  "metrics": [
   {
@@ -24336,6 +24340,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "39babcba241d330675301ef8c046918ad53abf734ff22ea7d24e75fba88cbc83",
+ "analysis_id": "c87c52723fea0774332fc47c7eeb10c59ffe6bcd0c3b190a7173af77d29f5142",
  "demo_label": "240fps撮影を30fpsタイムラインに書き出したスロー動画（メタデータなし）"
 }

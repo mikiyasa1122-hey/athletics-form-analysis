@@ -12,8 +12,8 @@ from fractions import Fraction
 from typing import Any
 
 from . import ALGORITHM_VERSION
-from .events import FOOT_CONTACT, TOE_OFF, MotionEvent
-from .pose import PoseFrame
+from .events import FOOT_CONTACT, TOE_OFF, MotionEvent, ObservationBreak, break_between
+from .pose import UNOBSERVABLE_POSE_FLAGS, PoseFrame
 from .timebase import CONTAINER_ONLY, REAL_TIME_OK, FrameIndex
 
 VALID = "valid"
@@ -72,8 +72,10 @@ TRUNK_LEAN = MetricDefinition(
 )
 DEFINITIONS = (CONTACT_TIME, CADENCE, KNEE_ANGLE, TRUNK_LEAN)
 
-# 種目として不自然に遅い動き（スロー書き出しの疑い）の下限。暫定値（DEC-016 で検証予定）
-PLAUSIBLE_MIN_CADENCE = {"sprint_100m": 2.0}
+# 種目として不自然な動き（スロー書き出しの疑い）を見分ける範囲。暫定値（DEC-016 で検証予定）
+#   min_cadence: これより遅いピッチは短距離として不自然（2倍スローでも引っかかる値）
+#   max_contact_time: これより長い接地時間は短距離として不自然
+PLAUSIBILITY = {"sprint_100m": {"min_cadence": 3.0, "max_contact_time": 0.25}}
 
 
 @dataclass
@@ -126,12 +128,15 @@ def worse(a: str, b: str) -> str:
 def format_with_resolution(value: float, lower: float, upper: float, unit: str) -> str:
     """区間幅に見合う桁数だけ表示する（NFR-TIME-003）。"""
     half = (upper - lower) / 2
-    if half <= 0:
-        digits = 3
-    else:
-        digits = max(0, min(3, -math.floor(math.log10(half))))
-    fmt = f"{{:.{digits}f}}"
-    return f"{fmt.format(value)} {unit}（範囲 {fmt.format(lower)}〜{fmt.format(upper)}）"
+    exp = -3 if half <= 0 else max(-3, math.floor(math.log10(half)))
+    digits = max(0, -exp)
+    step = 10 ** exp if exp > 0 else None   # 半幅が10以上なら1の位も丸める
+
+    def fmt(x: float) -> str:
+        if step is not None:
+            x = round(x / step) * step
+        return f"{x:.{digits}f}"
+    return f"{fmt(value)} {unit}（範囲 {fmt(lower)}〜{fmt(upper)}）"
 
 
 def _time_gate(index: FrameIndex, result: MetricResult) -> None:
@@ -170,63 +175,113 @@ def _finish_time_metric(index: FrameIndex, result: MetricResult, value: Fraction
     result.display = format_with_resolution(v, lo, hi, result.definition.unit)
 
 
-def contact_times(index: FrameIndex, events: list[MotionEvent]) -> list[MetricResult]:
-    results = []
+def _contact_pairs(events: list[MotionEvent], breaks: list[ObservationBreak]):
+    """(接地, 対応する離地 or None, 組めない理由 or None) を返す。区切りをまたいで組まない。"""
+    out: list[tuple[MotionEvent, MotionEvent | None, str | None]] = []
     for side in ("left", "right"):
         seq = [e for e in events if e.side == side]
         for i, ev in enumerate(seq):
             if ev.event_type != FOOT_CONTACT:
                 continue
             nxt = seq[i + 1] if i + 1 < len(seq) else None
-            r = MetricResult(CONTACT_TIME, VALID, side=side, evidence_event_ids=[ev.event_id],
-                             evidence_frame_ids=[ev.before_frame_id, ev.after_frame_id])
             if nxt is None or nxt.event_type != TOE_OFF:
-                r.status, r.display = UNAVAILABLE, "判定不可"
-                r.reasons.append("対応する離地イベントが観測されていない")
-                results.append(r)
+                out.append((ev, None, "対応する離地イベントが観測されていない"))
                 continue
-            r.evidence_event_ids.append(nxt.event_id)
-            r.evidence_frame_ids += [nxt.before_frame_id, nxt.after_frame_id]
-            for e in (ev, nxt):
-                if e.quality_status != "valid":
-                    r.status = worse(r.status, REVIEW)
-                    r.reasons += [f"{e.event_id}: {why}" for why in e.quality_reasons] or [f"{e.event_id} は要確認"]
-            lower = max(Fraction(0), nxt.lower - ev.upper)  # 接地時間は負にならない
-            _finish_time_metric(index, r, nxt.time - ev.time, lower, nxt.upper - ev.lower)
-            results.append(r)
+            br = break_between(breaks, side, ev.upper, nxt.lower)
+            if br is not None:
+                out.append((ev, None, f"接地と離地の間で観測が途切れている（{br.reason}）"))
+                continue
+            out.append((ev, nxt, None))
+    return out
+
+
+def contact_times(index: FrameIndex, events: list[MotionEvent], breaks: list[ObservationBreak]) -> list[MetricResult]:
+    results = []
+    for ev, nxt, why in _contact_pairs(events, breaks):
+        r = MetricResult(CONTACT_TIME, VALID, side=ev.side, evidence_event_ids=[ev.event_id],
+                         evidence_frame_ids=[ev.before_frame_id, ev.after_frame_id])
+        results.append(r)
+        if nxt is None:
+            r.status, r.display = UNAVAILABLE, "判定不可"
+            r.reasons.append(why or "対応する離地イベントがない")
+            continue
+        r.evidence_event_ids.append(nxt.event_id)
+        r.evidence_frame_ids += [nxt.before_frame_id, nxt.after_frame_id]
+        for e in (ev, nxt):
+            if e.quality_status != "valid":
+                r.status = worse(r.status, REVIEW)
+                r.reasons += [f"{e.event_id}: {w}" for w in e.quality_reasons] or [f"{e.event_id} は要確認"]
+        lower = max(Fraction(0), nxt.lower - ev.upper)  # 接地時間は負にならない
+        _finish_time_metric(index, r, nxt.time - ev.time, lower, nxt.upper - ev.lower)
     return results
 
 
-def cadence(index: FrameIndex, events: list[MotionEvent]) -> MetricResult:
+def _cadence_segment(events: list[MotionEvent], breaks: list[ObservationBreak]) -> list[MotionEvent]:
+    """観測の途切れ（左右どちらでも）を含まない、最も長い連続した接地の並び。"""
     contacts = [e for e in events if e.event_type == FOOT_CONTACT]
-    r = MetricResult(CADENCE, VALID, evidence_event_ids=[e.event_id for e in contacts],
-                     evidence_frame_ids=[e.after_frame_id for e in contacts])
-    r.quality["contact_count"] = len(contacts)
-    if len(contacts) < 3:
+    segments: list[list[MotionEvent]] = []
+    for c in contacts:
+        if segments and break_between(breaks, None, segments[-1][-1].upper, c.lower) is None:
+            segments[-1].append(c)
+        else:
+            segments.append([c])
+    return max(segments, key=len) if segments else []
+
+
+def cadence(index: FrameIndex, events: list[MotionEvent], breaks: list[ObservationBreak]) -> MetricResult:
+    seg = _cadence_segment(events, breaks)
+    total = sum(1 for e in events if e.event_type == FOOT_CONTACT)
+    r = MetricResult(CADENCE, VALID, evidence_event_ids=[e.event_id for e in seg],
+                     evidence_frame_ids=[e.after_frame_id for e in seg])
+    r.quality["contact_count"] = len(seg)
+    if len(seg) < total:
+        r.limitations.append(f"観測の途切れで区切り、連続した {len(seg)} 回の接地（全 {total} 回中）で計算")
+    if len(seg) < 3:
         r.status, r.display = UNAVAILABLE, "判定不可"
-        r.reasons.append(f"連続した接地が3回未満（{len(contacts)}回）")
+        r.reasons.append(f"途切れのない連続した接地が3回未満（{len(seg)}回）")
         return r
-    steps = len(contacts) - 1
-    first, last = contacts[0], contacts[-1]
-    for e in contacts:
+    for a, b in zip(seg, seg[1:]):
+        if a.side == b.side:
+            r.status = worse(r.status, REVIEW)
+            r.reasons.append(f"左右の接地が交互でない（{a.event_id} → {b.event_id}）。接地の見落とし・重複の疑い")
+            break
+    for e in seg:
         if e.quality_status != "valid":
             r.status = worse(r.status, REVIEW)
             r.reasons.append(f"{e.event_id} は要確認")
-    dur, dur_lo, dur_hi = last.time - first.time, last.lower - first.upper, last.upper - first.lower
+    steps = len(seg) - 1
+    first, last = seg[0], seg[-1]
+    dur_lo, dur_hi = last.lower - first.upper, last.upper - first.lower
     if dur_lo <= 0:
         r.status, r.display = UNAVAILABLE, "判定不可"
         r.reasons.append("接地の時刻区間が重なり、時間差を確定できない")
         return r
-    _finish_time_metric(index, r, steps / dur, steps / dur_hi, steps / dur_lo)
+    _finish_time_metric(index, r, steps / (last.time - first.time), steps / dur_hi, steps / dur_lo)
     return r
 
 
-def apparent_cadence(events: list[MotionEvent]) -> float | None:
-    contacts = [e for e in events if e.event_type == FOOT_CONTACT]
-    if len(contacts) < 3:
-        return None
-    dur = contacts[-1].time - contacts[0].time
-    return float((len(contacts) - 1) / dur) if dur > 0 else None
+def plausibility_findings(events: list[MotionEvent], breaks: list[ObservationBreak],
+                          discipline: str) -> tuple[bool, list[str]]:
+    """動画時間で見た動きの速さが種目として自然か。(確認できたか, 不自然だった点) を返す。"""
+    rule = PLAUSIBILITY.get(discipline)
+    if rule is None:
+        return False, []
+    checked, problems = False, []
+    seg = _cadence_segment(events, breaks)
+    if len(seg) >= 3 and seg[-1].time > seg[0].time:
+        checked = True
+        seen = float((len(seg) - 1) / (seg[-1].time - seg[0].time))
+        if seen < rule["min_cadence"]:
+            problems.append(f"動画時間上のピッチ {seen:.2f} 歩/秒 が {discipline} として不自然に低い"
+                            f"（下限 {rule['min_cadence']}）。スロー書き出しの疑い")
+    durations = sorted(float(n.time - c.time) for c, n, _ in _contact_pairs(events, breaks) if n is not None)
+    if durations:
+        checked = True
+        med = durations[len(durations) // 2]
+        if med > rule["max_contact_time"]:
+            problems.append(f"動画時間上の接地時間 {med:.3f} s が {discipline} として不自然に長い"
+                            f"（上限 {rule['max_contact_time']}）。スロー書き出しの疑い")
+    return checked, problems
 
 
 def _angle_deg(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float | None:
@@ -247,10 +302,16 @@ def _view_gate(cond: CaptureConditions, r: MetricResult) -> bool:
     return True
 
 
-def _frame_flags_gate(pose: PoseFrame, r: MetricResult) -> None:
+def _frame_flags_gate(pose: PoseFrame, r: MetricResult) -> bool:
+    """フレームの記録フラグで判定する。観測として使えなければ False（手動訂正で遮蔽フレームを指した場合など）。"""
+    if UNOBSERVABLE_POSE_FLAGS & set(pose.flags):
+        r.status, r.display, r.value = UNAVAILABLE, "判定不可", None
+        r.reasons.append("該当フレームは遮蔽・追跡ロストとして記録されている")
+        return False
     if "motion_blur" in pose.flags:
         r.status = worse(r.status, REVIEW)
         r.reasons.append("該当フレームにモーションブラー")
+    return True
 
 
 def knee_angles(events: list[MotionEvent], poses: dict[int, PoseFrame], cond: CaptureConditions,
@@ -277,8 +338,9 @@ def knee_angles(events: list[MotionEvent], poses: dict[int, PoseFrame], cond: Ca
             r.status, r.display = UNAVAILABLE, "判定不可"
             r.reasons.append("点が重なり角度を定義できない")
             continue
+        if not _frame_flags_gate(pose, r):
+            continue
         r.quality["min_keypoint_confidence"] = min(p.confidence for p in (hip, knee, ankle))
-        _frame_flags_gate(pose, r)
         r.value = round(ang, 1)
         r.display = f"{ang:.0f}°"
     return out
@@ -317,8 +379,9 @@ def trunk_leans(events: list[MotionEvent], poses: dict[int, PoseFrame], cond: Ca
             continue
         sign = 1 if cond.direction == "left_to_right" else -1
         lean = math.degrees(math.atan2(sign * dx, up))
+        if not _frame_flags_gate(pose, r):
+            continue
         r.quality["min_keypoint_confidence"] = min(p.confidence for p in pts if p)
-        _frame_flags_gate(pose, r)
         r.value = round(lean, 1)
         r.display = f"{lean:.0f}°"
     return out

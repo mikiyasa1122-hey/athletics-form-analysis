@@ -12,7 +12,8 @@
  "detector": {
   "ground_y": 900.0,
   "contact_band_px": 6.0,
-  "min_confidence": 0.5
+  "min_confidence": 0.5,
+  "max_unobserved_s": 0.06
  },
  "capture_conditions": {
   "camera_view": "side",
@@ -28,7 +29,8 @@
  "frame_completeness": {
   "source_frame_count": 36,
   "decoded_frame_count": 36,
-  "decode_failed_presentation_indexes": [],
+  "decode_failed_source_frame_ids": [],
+  "decode_check": "packets",
   "selected_frame_count": 36,
   "analyzed_frame_count": 36,
   "pose_failed_frame_ids": [],
@@ -51,6 +53,7 @@
   "gap_frame_ids": [],
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
+  "decode_check": "packets",
   "time_axis_valid": true
  },
  "frames": [
@@ -3408,7 +3411,8 @@
     "quality_reasons": [],
     "model_score": 0.85
    }
-  ]
+  ],
+  "observation_breaks": []
  },
  "metrics": [
   {
@@ -4221,6 +4225,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "e74a436452365eab39863bc8ce6381ee763ed4cb94a271ebeddac2af4cf4369a",
+ "analysis_id": "da7959eb3e5e983d60578cc016c80e761a4aefd165fcb54642d92814a2649375",
  "demo_label": "30fps（時間分解能が粗い）"
 }

@@ -10,13 +10,13 @@ from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Any
 
-from .pose import PoseFrame
+from .pose import UNOBSERVABLE_POSE_FLAGS, PoseFrame
 from .timebase import FrameIndex
 
 FOOT_CONTACT = "foot_contact"
 TOE_OFF = "toe_off"
 SIDES = ("left", "right")
-UNOBSERVABLE_FLAGS = {"occluded", "tracking_lost"}
+UNOBSERVABLE_FLAGS = UNOBSERVABLE_POSE_FLAGS
 DEGRADING_FLAGS = {"motion_blur"}
 
 
@@ -65,10 +65,29 @@ class DetectorConfig:
     ground_y: float              # 画像上の地面の高さ（px、下向き正）。撮影条件として与える
     contact_band_px: float = 6.0
     min_confidence: float = 0.5
+    # 観測の途切れがこれ以上続くと、接地または滞空が丸ごと隠れうる（短距離の最短局面 ≒ 0.08s より短く取る）。
+    # 暫定値。DEC-016 で種目ごとに決め直す。
+    max_unobserved_s: float = 0.06
 
     def to_json(self) -> dict[str, Any]:
         return {"ground_y": self.ground_y, "contact_band_px": self.contact_band_px,
-                "min_confidence": self.min_confidence}
+                "min_confidence": self.min_confidence, "max_unobserved_s": self.max_unobserved_s}
+
+
+@dataclass(frozen=True)
+class ObservationBreak:
+    """足の状態を連続して追えない区間。この区間をまたいでイベントを数えない・指標を組まない。"""
+    side: str
+    before_frame_id: int
+    after_frame_id: int
+    lower: Fraction
+    upper: Fraction
+    reason: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"side": self.side, "source_frame_ids": [self.before_frame_id, self.after_frame_id],
+                "time_interval_sec": {"lower": float(self.lower), "upper": float(self.upper)},
+                "reason": self.reason}
 
 
 def foot_state(pose: PoseFrame | None, side: str, cfg: DetectorConfig) -> tuple[bool | None, float | None]:
@@ -83,8 +102,16 @@ def foot_state(pose: PoseFrame | None, side: str, cfg: DetectorConfig) -> tuple[
     return lowest >= cfg.ground_y - cfg.contact_band_px, min(p.confidence for p in visible)
 
 
-def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorConfig) -> list[MotionEvent]:
+@dataclass
+class Detection:
+    events: list[MotionEvent]
+    breaks: list[ObservationBreak]
+
+
+def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorConfig) -> Detection:
     events: list[MotionEvent] = []
+    breaks: list[ObservationBreak] = []
+    limit = Fraction(cfg.max_unobserved_s)
     for side in SIDES:
         last_state: bool | None = None
         last_frame = None
@@ -99,7 +126,13 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                 if last_state is not None:
                     unobserved_between = True
                 continue
-            if last_state is not None and last_frame is not None and state != last_state:
+            if last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
+                # 途切れが長いと、間で何回遷移したか分からない。イベントを作らず区切りとして記録する
+                why = "フレーム欠落" if "after_gap" in frame.flags and not unobserved_between else "観測できないフレームが続く"
+                breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
+                                               last_frame.timestamp, frame.timestamp,
+                                               f"{why}（{float(frame.timestamp - last_frame.timestamp) * 1000:.0f} ms）"))
+            elif last_state is not None and last_frame is not None and state != last_state:
                 reasons: list[str] = []
                 if unobserved_between:
                     reasons.append("遷移区間に観測できないフレームがある")
@@ -118,7 +151,27 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                     quality_reasons=tuple(reasons), model_score=score,
                 ))
             last_state, last_frame, unobserved_between = state, frame, False
-    return sort_events(events)
+    return Detection(sort_events(events), sorted(breaks, key=lambda b: (b.lower, b.side)))
+
+
+def break_between(breaks: list[ObservationBreak], side: str | None, start: Fraction, end: Fraction) -> ObservationBreak | None:
+    """start〜end の間に（side が None なら左右どちらかの）区切りがあれば返す。"""
+    for b in breaks:
+        if (side is None or b.side == side) and b.lower < end and b.upper > start:
+            return b
+    return None
+
+
+def validate_sequence(events: list[MotionEvent], breaks: list[ObservationBreak]) -> list[MotionEvent]:
+    """同じ足で接地と離地が交互になっていないイベントを要確認にする（見落とし・重複・誤訂正の検出）。"""
+    flagged: set[str] = set()
+    for side in SIDES:
+        seq = [e for e in events if e.side == side]
+        for a, b in zip(seq, seq[1:]):
+            if a.event_type == b.event_type and break_between(breaks, side, a.upper, b.lower) is None:
+                flagged.update((a.event_id, b.event_id))
+    return [with_status(e, "review_required", "同じ足で接地と離地が交互になっていない") if e.event_id in flagged else e
+            for e in events]
 
 
 def sort_events(events: list[MotionEvent]) -> list[MotionEvent]:
@@ -157,11 +210,11 @@ class EventLayers:
     auto: list[MotionEvent]
     corrections: list[Correction] = field(default_factory=list)
 
-    def effective(self, index: FrameIndex) -> list[MotionEvent]:
+    def effective(self, index: FrameIndex, breaks: list[ObservationBreak] | None = None) -> list[MotionEvent]:
         current = {e.event_id: e for e in self.auto}
         for c in self.corrections:
             current = _apply(current, c, index)
-        return sort_events(list(current.values()))
+        return validate_sequence(sort_events(list(current.values())), breaks or [])
 
 
 def _bracket(index: FrameIndex, after_frame_id: int) -> tuple[int, Fraction, Fraction]:

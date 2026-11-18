@@ -111,17 +111,76 @@ class InvalidInputTest(unittest.TestCase):
         with self.assertRaises(TimebaseError):
             build_frame_index(probe_with([]))
 
-    def test_best_effort_timestamp_fallback(self):
+    def test_best_effort_timestamp_not_used(self):
+        # best_effort_timestamp は ffprobe が推測した値になりうるので、PTSの代わりにしない
         p = probe_with([0, 3000])
         p["frames"][1] = {"media_type": "video", "stream_index": 0, "best_effort_timestamp": 3000}
-        self.assertEqual(build_frame_index(p).frames[1].timestamp, Fraction(1, 30))
+        with self.assertRaises(TimebaseError):
+            build_frame_index(p)
 
-    def test_decode_failure_recorded_ids_stable(self):
-        p = probe_with([0, 3000, 6000])
-        p["frames"][1]["decode_error"] = True
+    def test_packet_without_pts_rejected(self):
+        p = probe_with([0, 3000])
+        p["packets"] = [{"codec_type": "video", "stream_index": 0, "pts": 0}, {"codec_type": "video", "stream_index": 0}]
+        with self.assertRaises(TimebaseError):
+            build_frame_index(p)
+
+
+class DecodeFailureTest(unittest.TestCase):
+    """実際の ffprobe では、復号できないフレームは frames から消えるだけ。パケットとの差分で見つける。"""
+
+    def packets(self, pts_list):
+        return [{"codec_type": "video", "stream_index": 0, "pts": p, "dts": p} for p in pts_list]
+
+    def test_missing_frame_detected_and_ids_stable(self):
+        p = probe_with([0, 6000, 9000, 12000, 15000])
+        p["packets"] = self.packets([0, 3000, 6000, 9000, 12000, 15000])
+        idx = build_frame_index(p)
+        self.assertEqual(idx.decode_failures, [1])
+        self.assertEqual(idx.decode_check, "packets")
+        self.assertEqual([f.source_frame_id for f in idx.frames], [0, 2, 3, 4, 5])  # 失敗しても後ろのIDは詰まらない
+        self.assertIn("after_gap", idx.by_id(2).flags)
+
+    def test_packets_in_decode_order(self):
+        # Bフレームのあるストリームではパケットは復号順（PTS順でない）。PTS順で原本IDを振る
+        p = probe_with([0, 3000, 6000, 9000])
+        p["packets"] = self.packets([0, 9000, 3000, 6000])
+        idx = build_frame_index(p)
+        self.assertEqual([f.source_frame_id for f in idx.frames], [0, 1, 2, 3])
+        self.assertEqual(idx.decode_failures, [])
+
+    def test_packets_and_frames_format(self):
+        # -show_packets と -show_frames を併用したときの ffprobe の出力形式
+        p = probe_with([])
+        p["packets_and_frames"] = [
+            {"type": "packet", "codec_type": "video", "stream_index": 0, "pts": 0},
+            {"type": "frame", "media_type": "video", "stream_index": 0, "pts": 0},
+            {"type": "packet", "codec_type": "video", "stream_index": 0, "pts": 3000},
+            {"type": "packet", "codec_type": "video", "stream_index": 0, "pts": 6000},
+            {"type": "frame", "media_type": "video", "stream_index": 0, "pts": 6000},
+        ]
         idx = build_frame_index(p)
         self.assertEqual(idx.decode_failures, [1])
         self.assertEqual([f.source_frame_id for f in idx.frames], [0, 2])
+
+    def test_without_packets_check_unavailable(self):
+        idx = build_frame_index(probe_with([0, 3000]))
+        self.assertEqual(idx.decode_check, "unavailable")
+        self.assertEqual(idx.decode_failures, [])
+
+    def test_analysis_reports_decode_failures(self):
+        snap = run(CaptureSpec(capture_fps=240, decode_fail_frames={50, 51}))
+        c = snap["frame_completeness"]
+        self.assertEqual(c["decode_failed_source_frame_ids"], [50, 51])
+        self.assertEqual(c["decode_check"], "packets")
+        self.assertEqual(c["source_frame_count"], c["decoded_frame_count"] + 2)
+        self.assertEqual(c["pose_failed_frame_ids"], [])
+
+    def test_unknown_total_when_no_packets(self):
+        def strip(probe):
+            del probe["packets"]
+        snap = run(CaptureSpec(capture_fps=60), probe_edit=strip)
+        self.assertIsNone(snap["frame_completeness"]["source_frame_count"])
+        self.assertEqual(snap["frame_completeness"]["decode_check"], "unavailable")
 
 
 class ExactTimeTest(unittest.TestCase):

@@ -12,8 +12,8 @@ from typing import Any
 
 from . import ALGORITHM_VERSION, SNAPSHOT_SCHEMA_VERSION
 from .events import Correction, DetectorConfig, EventLayers, detect_events
-from .metrics import (PLAUSIBLE_MIN_CADENCE, CaptureConditions, MetricResult, apparent_cadence, cadence,
-                      cap_for_preview, contact_times, knee_angles, trunk_leans)
+from .metrics import (CaptureConditions, MetricResult, cadence, cap_for_preview, contact_times,
+                      knee_angles, plausibility_findings, trunk_leans)
 from .pose import PoseAdapter, PoseFrame
 from .timebase import FrameIndex, downgrade_capture_time
 
@@ -63,7 +63,8 @@ def _subindex(index: FrameIndex, ids: list[int]) -> FrameIndex:
     return FrameIndex(frames=[f for f in index.frames if f.source_frame_id in keep], time_base=index.time_base,
                       nominal_fps=index.nominal_fps, capture_fps=index.capture_fps,
                       capture_time_status=index.capture_time_status,
-                      capture_time_notes=list(index.capture_time_notes), decode_failures=list(index.decode_failures))
+                      capture_time_notes=list(index.capture_time_notes), decode_failures=list(index.decode_failures),
+                      decode_check=index.decode_check)
 
 
 def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:
@@ -85,9 +86,11 @@ def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:
         poses[fid] = result
     total = len(inp.index.frames)
     completeness = {
-        "source_frame_count": total + len(inp.index.decode_failures),
+        # パケットと突き合わせられないときは原本の総数が分からないので None（推測しない）
+        "source_frame_count": (total + len(inp.index.decode_failures)) if inp.index.decode_check == "packets" else None,
         "decoded_frame_count": total,
-        "decode_failed_presentation_indexes": list(inp.index.decode_failures),
+        "decode_failed_source_frame_ids": list(inp.index.decode_failures),
+        "decode_check": inp.index.decode_check,
         "selected_frame_count": len(selected),
         "analyzed_frame_count": len(poses),
         "pose_failed_frame_ids": failed,
@@ -100,28 +103,29 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
     poses, completeness = run_pose(inp)
     # 入力の索引は変更しない（同じ入力で何度でも同じ結果: FR-TIME-014）
     work_index = _subindex(inp.index, [f.source_frame_id for f in inp.index.frames])
-    timing_index = work_index if inp.sampling.mode == ALL_SOURCE_FRAMES else _subindex(work_index, list(poses))
-    auto_events = detect_events(timing_index, poses, inp.detector)
-    layers = EventLayers(auto_events, list(corrections or []))
-    effective = layers.effective(timing_index)
+    # プレビューでも「選んだが推定に失敗したフレーム」は索引に残し、未観測として区間を広げる
+    timing_index = (work_index if inp.sampling.mode == ALL_SOURCE_FRAMES
+                    else _subindex(work_index, _select_frames(inp)))
+    detection = detect_events(timing_index, poses, inp.detector)
+    layers = EventLayers(detection.events, list(corrections or []))
+    effective = layers.effective(timing_index, detection.breaks)
 
-    # 種目として不自然に遅い動き → スロー書き出しを疑い、実時間指標を出さない（AC-015）
-    floor = PLAUSIBLE_MIN_CADENCE.get(inp.conditions.discipline)
-    seen = apparent_cadence(effective)
-    if floor is not None and seen is not None and seen < floor:
-        downgrade_capture_time(timing_index,
-                               f"動画時間上のピッチ {seen:.2f} 歩/秒 が {inp.conditions.discipline} として"
-                               f"不自然に低い（下限 {floor}）。スロー書き出しの疑い")
+    # 動画時間で見た動きの速さが種目として不自然 → スロー書き出しを疑い、実時間指標を出さない（AC-015）
+    # 接地時間かピッチのどちらかが出せる素材なら、必ずこのチェックを通る（値が出るのに未確認、はない）
+    _, problems = plausibility_findings(effective, detection.breaks, inp.conditions.discipline)
+    for problem in problems:
+        downgrade_capture_time(timing_index, problem)
         if timing_index is not work_index:
-            downgrade_capture_time(work_index, timing_index.capture_time_notes[-1])
+            downgrade_capture_time(work_index, problem)
 
-    metrics: list[MetricResult] = []
-    metrics += contact_times(timing_index, effective)
-    metrics.append(cadence(timing_index, effective))
+    time_metrics: list[MetricResult] = contact_times(timing_index, effective, detection.breaks)
+    time_metrics.append(cadence(timing_index, effective, detection.breaks))
+    metrics = time_metrics
     metrics += knee_angles(effective, poses, inp.conditions, inp.detector.min_confidence)
     metrics += trunk_leans(effective, poses, inp.conditions, inp.detector.min_confidence)
     if inp.sampling.mode != ALL_SOURCE_FRAMES:
         cap_for_preview(metrics)
+    auto_events = detection.events
 
     body = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -141,6 +145,7 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
             "auto": [e.to_json() for e in auto_events],
             "corrections": [c.to_json() for c in layers.corrections],
             "effective": [e.to_json() for e in effective],
+            "observation_breaks": [b.to_json() for b in detection.breaks],
         },
         "metrics": [m.to_json() for m in metrics],
     }

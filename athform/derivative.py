@@ -13,12 +13,15 @@ from .timebase import FrameIndex
 
 
 def map_proxy_to_source(source: FrameIndex, proxy: FrameIndex, *, offset: Fraction = Fraction(0)) -> dict[str, Any]:
-    """proxy の各フレームを、元動画時刻が半フレーム間隔以内で一致する原本フレームに対応づける。"""
+    """proxy の各フレームを、元動画時刻が一致する原本フレームに対応づける。
+
+    許容幅は time_base の丸め（粗い方の1tick）だけ。フレーム間隔の半分のような広い幅にすると、
+    補間で作った中間フレームが原本フレームとして通ってしまう。一致しないフレームはすべて generated。
+    """
     src = [f for f in source.frames if f.usable_for_timing]
     if not src:
         raise ValueError("原本に時刻の確定したフレームがない")
-    ivs = source.intervals()
-    tol = (min(ivs) / 2) if ivs else Fraction(1, 1000)
+    tol = max(source.time_base, proxy.time_base)
     mapping = []
     used: dict[int, int] = {}
     j = 0
@@ -28,7 +31,7 @@ def map_proxy_to_source(source: FrameIndex, proxy: FrameIndex, *, offset: Fracti
             j += 1
         cand = src[j]
         entry: dict[str, Any] = {"proxy_index": p.presentation_index, "proxy_t": float(p.timestamp)}
-        if abs(cand.timestamp - t) < tol:
+        if abs(cand.timestamp - t) <= tol:
             entry["source_frame_id"] = cand.source_frame_id
             if cand.source_frame_id in used:
                 entry["kind"] = "duplicate"

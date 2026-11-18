@@ -22,15 +22,13 @@ class CompletenessTest(unittest.TestCase):
 
     def test_pose_failures_and_decode_failures_reported(self):
         def drop(pose):
-            # 200 は復号失敗フレームなので姿勢も存在しない
-            pose["frames"] = [f for f in pose["frames"] if f["source_frame_id"] not in (5, 6, 100, 200)]
+            pose["frames"] = [f for f in pose["frames"] if f["source_frame_id"] not in (5, 6, 100)]
 
-        def bad_decode(probe):
-            probe["frames"][200]["decode_error"] = True
-        snap = run(CaptureSpec(capture_fps=240), pose_edit=drop, probe_edit=bad_decode)
+        # 200 はパケットはあるが復号できないフレーム（ffprobe の frames には出てこない）
+        snap = run(CaptureSpec(capture_fps=240, decode_fail_frames={200}), pose_edit=drop)
         c = snap["frame_completeness"]
         self.assertEqual(c["pose_failed_frame_ids"], [5, 6, 100])
-        self.assertEqual(c["decode_failed_presentation_indexes"], [200])
+        self.assertEqual(c["decode_failed_source_frame_ids"], [200])
         self.assertEqual(c["source_frame_count"], c["decoded_frame_count"] + 1)
         self.assertEqual(c["analyzed_frame_count"], c["decoded_frame_count"] - 3)
 
@@ -51,6 +49,16 @@ class PreviewTest(unittest.TestCase):
         for m in snap["metrics"]:
             self.assertNotEqual(m["status"], "valid")
             self.assertTrue(any("プレビュー" in x for x in m["limitations"]))
+
+    def test_preview_pose_failures_widen_events(self):
+        # プレビューで推定に失敗したフレームは未観測として扱い、イベントを要確認にする（レビュー N4）
+        def drop(pose):
+            pose["frames"] = [f for f in pose["frames"] if f["source_frame_id"] not in range(8, 20)]
+        snap = run(CaptureSpec(capture_fps=240, write_capture_fps_tag=True), pose_edit=drop,
+                   sampling=SamplingPolicy("preview_every_nth", 2, "確認用"))
+        e = next(e for e in snap["events"]["auto"] if e["side"] == "right")
+        self.assertEqual(e["quality_status"], "review_required")
+        self.assertIn("遷移区間に観測できないフレームがある", e["quality_reasons"])
 
     def test_preview_requires_reason_and_n(self):
         for pol in (SamplingPolicy("preview_every_nth", 4, ""), SamplingPolicy("preview_every_nth", 1, "x"),

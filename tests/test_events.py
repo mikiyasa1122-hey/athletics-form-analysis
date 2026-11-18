@@ -56,6 +56,35 @@ class UnobservedTest(unittest.TestCase):
         ct = next(m for m in snap["metrics"] if m["metric_id"] == "contact_time" and e["event_id"] in m["evidence_refs"]["event_ids"])
         self.assertNotEqual(ct["status"], "valid")
 
+    def test_long_occlusion_or_drop_is_a_break_not_a_valid_value(self):
+        # 1歩分以上（0.35〜0.72s）を覆う遮蔽・欠落。間の離地・接地が消えたまま値を出してはいけない（レビュー B1）
+        span = set(range(int(0.35 * 240), int(0.72 * 240)))
+        for kw in ({"occluded_frames": span}, {"drop_frames": span}):
+            with self.subTest(**{k: "0.35-0.72s" for k in kw}):
+                snap = run(CaptureSpec(capture_fps=240, write_capture_fps_tag=True, **kw))
+                self.assertTrue(snap["events"]["observation_breaks"])
+                for m in snap["metrics"]:
+                    if m["metric_id"] == "contact_time" and m["value"] is not None:
+                        self.assertLessEqual(m["interval"]["lower"], MODEL.contact_time)
+                        self.assertGreaterEqual(m["interval"]["upper"], MODEL.contact_time)
+                    if m["metric_id"] == "cadence" and m["value"] is not None:
+                        self.assertLessEqual(m["interval"]["lower"], MODEL.cadence)
+                        self.assertGreaterEqual(m["interval"]["upper"], MODEL.cadence)
+                # 途切れをまたぐ接地時間は判定不可で、理由がある
+                crossing = [m for m in snap["metrics"] if m["metric_id"] == "contact_time"
+                            and any("途切れ" in r for r in m["reasons"])]
+                self.assertTrue(crossing)
+                self.assertTrue(all(m["status"] == "unavailable" for m in crossing))
+                # 全イベント区間は真値を含む（途切れをまたいでイベントを作らない）
+                truth = truth_times(1.2)
+                for e in snap["events"]["auto"]:
+                    lo, hi = e["time_interval_sec"]["lower"], e["time_interval_sec"]["upper"]
+                    self.assertTrue(any(lo - 1e-9 <= t <= hi + 1e-9 for t in truth[(e["side"], e["event_type"])]))
+
+    def test_short_occlusion_is_not_a_break(self):
+        snap = run(CaptureSpec(capture_fps=240, occluded_frames={11, 12, 13}))
+        self.assertEqual(snap["events"]["observation_breaks"], [])
+
     def test_blur_flags_event(self):
         snap = run(CaptureSpec(capture_fps=240, blurred_frames={13}))
         e = next(e for e in snap["events"]["auto"] if 13 in e["source_frame_ids"])

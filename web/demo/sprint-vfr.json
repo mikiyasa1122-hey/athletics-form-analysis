@@ -12,7 +12,8 @@
  "detector": {
   "ground_y": 900.0,
   "contact_band_px": 6.0,
-  "min_confidence": 0.5
+  "min_confidence": 0.5,
+  "max_unobserved_s": 0.06
  },
  "capture_conditions": {
   "camera_view": "side",
@@ -28,7 +29,8 @@
  "frame_completeness": {
   "source_frame_count": 144,
   "decoded_frame_count": 144,
-  "decode_failed_presentation_indexes": [],
+  "decode_failed_source_frame_ids": [],
+  "decode_check": "packets",
   "selected_frame_count": 144,
   "analyzed_frame_count": 144,
   "pose_failed_frame_ids": [],
@@ -51,6 +53,7 @@
   "gap_frame_ids": [],
   "duplicate_pts_frame_ids": [],
   "decode_failures": [],
+  "decode_check": "packets",
   "time_axis_valid": true
  },
  "frames": [
@@ -12010,7 +12013,8 @@
     "quality_reasons": [],
     "model_score": 0.85
    }
-  ]
+  ],
+  "observation_breaks": []
  },
  "metrics": [
   {
@@ -12815,6 +12819,6 @@
    "apparent_video_value": null
   }
  ],
- "analysis_id": "f3c1c16684cbb3c0c372c53802a482b3b2b6f592c7b454231a685798012753e5",
+ "analysis_id": "2785019f355ba9e96e52e198322c1882fbe373cca685887fa6a2889e8f72d9dd",
  "demo_label": "可変フレームレート＋一部遮蔽"
 }

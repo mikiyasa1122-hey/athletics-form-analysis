@@ -78,6 +78,7 @@ class CaptureSpec:
     occluded_frames: set[int] = field(default_factory=set)
     blurred_frames: set[int] = field(default_factory=set)
     drop_frames: set[int] = field(default_factory=set)   # 撮影時に記録されなかったフレーム（欠落）
+    decode_fail_frames: set[int] = field(default_factory=set)  # パケットはあるが復号できないフレーム
 
 
 def capture_times(spec: CaptureSpec) -> list[float]:
@@ -97,9 +98,14 @@ def make_dataset(spec: CaptureSpec, model: SprintModel | None = None) -> tuple[d
     model = model or SprintModel()
     times = capture_times(spec)
     frames = []
+    packets = []
     pose_frames = []
     for i, t in enumerate(times):
         pts = round(t * spec.container_time_scale * TIME_BASE_DEN)
+        # パケット（コンテナに記録された原本フレーム）は常にある。復号失敗はフレームとして出てこない（ffprobe と同じ）
+        packets.append({"codec_type": "video", "stream_index": 0, "pts": pts, "dts": pts})
+        if i in spec.decode_fail_frames:
+            continue
         frames.append({"media_type": "video", "stream_index": 0, "pts": pts, "pkt_dts": pts})
         flags = []
         kps: dict[str, list[float] | None] = dict(model.pose_at(t))  # type: ignore[arg-type]
@@ -119,7 +125,7 @@ def make_dataset(spec: CaptureSpec, model: SprintModel | None = None) -> tuple[d
     }
     if spec.write_capture_fps_tag:
         stream["tags"]["com.android.capture.fps"] = f"{spec.capture_fps:.6f}"
-    probe = {"streams": [stream], "frames": frames, "format": {"tags": {}}}
+    probe = {"streams": [stream], "packets": packets, "frames": frames, "format": {"tags": {}}}
     pose = {"model": {"model_id": "synthetic-fixture", "weights_version": "0", "config": {"note": "合成データ"}},
             "frames": pose_frames}
     return probe, pose
