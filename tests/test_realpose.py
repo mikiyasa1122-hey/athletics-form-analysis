@@ -73,12 +73,17 @@ class GroundTest(unittest.TestCase):
 
     def test_flat_ground_found(self):
         cfg, diag = estimate_ground(self.frames())
-        self.assertAlmostEqual(cfg.ground_y + cfg.ground_slope * (900 - cfg.ground_x0), GROUND_Y, delta=3)
+        # 画面の左端から右端まで、地面の線が真の地面から3px以内（遊脚の点に引っ張られて傾かない）
+        for x in (250, 500, 750, 1000):
+            self.assertAlmostEqual(cfg.ground_y + cfg.ground_slope * (x - cfg.ground_x0), GROUND_Y, delta=3)
+        self.assertLess(diag["contact_points_used"], diag["envelope_points"])
         self.assertGreater(cfg.contact_band_px, 4)
 
     def test_tilted_ground_found(self):
         cfg, _ = estimate_ground(self.frames(slope=0.05))
-        self.assertAlmostEqual(cfg.ground_slope, 0.05, delta=0.02)
+        self.assertAlmostEqual(cfg.ground_slope, 0.05, delta=0.01)
+        for x in (250, 1000):
+            self.assertAlmostEqual(cfg.ground_y + cfg.ground_slope * (x - cfg.ground_x0), GROUND_Y + 0.05 * x, delta=4)
 
     def test_no_feet_raises(self):
         empty = {i: PoseFrame(i, {k: None for k in KEYPOINTS}, ["no_person"]) for i in range(50)}

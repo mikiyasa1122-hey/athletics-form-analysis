@@ -246,19 +246,25 @@ def estimate_ground(frames: dict[int, PoseFrame], min_conf: float = 0.3) -> tupl
         if b not in lows or y > lows[b][1]:
             lows[b] = (x, y)
     env = list(lows.values())
-    slope = 0.0
-    # 足が体の高さ以上に横へ動いた（カメラ固定で走り抜ける）ときだけ傾きを求める。
-    # カメラが追いかける映像では足がほぼ画面の同じ位置にあり、傾きは決められないので水平とみなす
-    if len(env) >= 3 and (x_hi - x_lo) > body > 0:
-        mx = sum(x for x, _ in env) / len(env)
-        my = sum(y for _, y in env) / len(env)
-        den = sum((x - mx) ** 2 for x, _ in env)
-        slope = sum((x - mx) * (y - my) for x, y in env) / den if den > 0 else 0.0
-        slope = max(-0.2, min(0.2, slope))
-    x0 = sum(x for x, _ in env) / len(env)
-    # 線の高さは包絡点の中央値（外れ値に強い）
-    y0 = median(y - slope * (x - x0) for x, y in env)
+    # 区間によっては足が浮いている（遊脚）点しかない。直線を当てて、線より明らかに上（画面で小さい y）の点を
+    # 除いて当て直すことを繰り返し、接地している点だけで地面を決める
+    slope, x0 = 0.0, sum(x for x, _ in env) / len(env)
+    use = env
+    for _ in range(4):
+        x0 = sum(x for x, _ in use) / len(use)
+        if len(use) >= 3 and (x_hi - x_lo) > body > 0:
+            my = sum(y for _, y in use) / len(use)
+            den = sum((x - x0) ** 2 for x, _ in use)
+            slope = sum((x - x0) * (y - my) for x, y in use) / den if den > 0 else 0.0
+            slope = max(-0.2, min(0.2, slope))
+        y0 = max(y - slope * (x - x0) for x, y in use)   # 下側の包絡なので、最も下の点を基準にする
+        kept = [(x, y) for x, y in use if y - slope * (x - x0) >= y0 - band]   # 接地幅より上は遊脚とみなす
+        if len(kept) == len(use) or len(kept) < 2:
+            break
+        use = kept
+    # 線の高さは、接地とみなした点の中央値（外れ値に強い）
+    y0 = median(y - slope * (x - x0) for x, y in use)
     cfg = DetectorConfig(ground_y=y0, contact_band_px=band, min_confidence=min_conf, ground_slope=slope, ground_x0=x0)
-    diag = {"method": "lower-envelope line fit", "envelope_points": len(env), "foot_points": len(pts),
+    diag = {"method": "lower-envelope line fit", "envelope_points": len(env), "contact_points_used": len(use), "foot_points": len(pts),
             "median_body_height_px": round(body, 1), "slope_clamped_to": 0.2}
     return cfg, diag
