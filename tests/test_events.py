@@ -85,6 +85,40 @@ class UnobservedTest(unittest.TestCase):
         snap = run(CaptureSpec(capture_fps=240, occluded_frames={11, 12, 13}))
         self.assertEqual(snap["events"]["observation_breaks"], [])
 
+    def test_reacquired_frame_breaks_observation(self):
+        # レビュー B4: 対象人物を取り直したフレームでは観測を区切り、前後をつないでイベントを作らない
+        from athform.events import DetectorConfig, detect_events
+        from athform.synth import GROUND_Y, make_dataset
+        from athform.pose import FixturePoseAdapter
+        from athform.timebase import build_frame_index
+        probe, pose = make_dataset(CaptureSpec(capture_fps=240))
+        pose["frames"][13]["flags"].append("reacquired")   # 右足の初回接地の直後
+        adapter = FixturePoseAdapter(pose)
+        index = build_frame_index(probe)
+        poses = {f.source_frame_id: adapter.infer(f.source_frame_id) for f in index.frames}
+        det = detect_events(index, poses, DetectorConfig(ground_y=GROUND_Y))
+        self.assertTrue(any("取り直した" in b.reason for b in det.breaks))
+        self.assertFalse(any(e.after_frame_id == 13 for e in det.events))
+
+    def test_reacquired_frame_without_feet_still_breaks(self):
+        # 再々レビュー N1: 取り直したフレームで足が見えなくても、次に足が見えたところで区切る
+        from athform.events import DetectorConfig, detect_events
+        from athform.synth import GROUND_Y, make_dataset
+        from athform.pose import FixturePoseAdapter
+        from athform.timebase import build_frame_index
+        probe, pose = make_dataset(CaptureSpec(capture_fps=240))
+        f13 = pose["frames"][13]
+        f13["flags"].append("reacquired")
+        for k in list(f13["keypoints"]):
+            if k.endswith(("heel", "toe", "ankle")):
+                f13["keypoints"][k] = None
+        adapter = FixturePoseAdapter(pose)
+        index = build_frame_index(probe)
+        poses = {f.source_frame_id: adapter.infer(f.source_frame_id) for f in index.frames}
+        det = detect_events(index, poses, DetectorConfig(ground_y=GROUND_Y))
+        self.assertTrue(any("取り直した" in b.reason for b in det.breaks))
+        self.assertFalse(any(e.before_frame_id < 13 < e.after_frame_id or e.after_frame_id == 14 for e in det.events))
+
     def test_blur_flags_event(self):
         snap = run(CaptureSpec(capture_fps=240, blurred_frames={13}))
         e = next(e for e in snap["events"]["auto"] if 13 in e["source_frame_ids"])

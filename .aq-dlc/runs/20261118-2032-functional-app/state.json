@@ -1,0 +1,680 @@
+{
+  "run_id": "20261118-2032-functional-app",
+  "title": "functional-app",
+  "status": "complete",
+  "phase": "done",
+  "created": "2026-11-18T20:32:10+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "S-0001",
+    "W-0003",
+    "W-0006",
+    "F-0003",
+    "F-0004",
+    "F-0007",
+    "F-0010"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "動画を追加すると、原本を改変せず保存し（SHA-256）、ffprobe で動画として読めるものだけ受け付ける（FR-VID-001/002/005, NFR-SEC-003）",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "動画でないファイル・未対応形式・時刻の読めない動画を受け付ける／失敗の残骸が残る",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "拡張子・種目・日付・未知項目の検証、失敗時に残骸なし",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_upload_validation"
+            }
+          ]
+        },
+        {
+          "id": "K23",
+          "text": "強制終了したアップロードの残骸が残る（レビュー N7）",
+          "verifications": [
+            {
+              "id": "V26",
+              "method": "起動時に DB に行のないフォルダを消す",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_orphan_folders_cleaned_on_start"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "ローカル専用のサーバーとして、他サイトからの読み書き・パストラバーサルを防ぐ（NFR-SEC-002/005, S-0001）",
+      "risks": [
+        {
+          "id": "K2",
+          "text": "他サイトのページから書き込み・削除される（CSRF、DNSリバインディング）",
+          "verifications": [
+            {
+              "id": "V2",
+              "method": "Host・Origin・Content-Type・専用ヘッダー・OPTIONS の拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_host_origin_and_content_type_guards"
+            }
+          ]
+        },
+        {
+          "id": "K3",
+          "text": "ID やフレーム番号でデータフォルダの外を読まれる",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "../ やエンコードしたパス、不正なID・テストファイルが 404",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_path_traversal_and_bad_ids"
+            }
+          ]
+        },
+        {
+          "id": "K4",
+          "text": "解析データ由来の文字列が HTML として実行される（XSS）",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "app.js が innerHTML 等を使わず、参照IDがHTMLにある",
+              "command": "node --test web/tests/static.test.js"
+            }
+          ]
+        },
+        {
+          "id": "K22",
+          "text": "tests の大文字小文字すり抜け・負の Content-Length・配列 JSON・NaN の地面・CORP なし（レビュー N6/N7/N9/N10）",
+          "verifications": [
+            {
+              "id": "V25",
+              "method": "入力の検査と許可リスト",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_input_hardening"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "解析は非同期ジョブで、進み具合・取消・失敗理由が分かり、同じ動画を二重に実行しない（FR-VID-006, FR-TIME-015, ARCH-004/005）",
+      "risks": [
+        {
+          "id": "K5",
+          "text": "二重実行・取り消せない・失敗が黙って消える",
+          "verifications": [
+            {
+              "id": "V5",
+              "method": "二重実行の拒否と取消",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_duplicate_job_rejected_and_cancel"
+            },
+            {
+              "id": "V6",
+              "method": "姿勢推定なしの再計算は拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_reanalyze_requires_pose"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": true,
+      "text": "実際の動画の全原本フレームを提示順に復号し、索引と同じ枚数でなければ止める（FR-TIME-005, AC-014）",
+      "risks": [
+        {
+          "id": "K6",
+          "text": "復号した画像と原本フレームIDがずれ、骨格や指標が別のフレームに付く",
+          "verifications": [
+            {
+              "id": "V7",
+              "method": "実際の ffmpeg の出力で、可変FPS・欠落・破損・先頭カットでも索引と同じ枚数",
+              "command": "python3 -m unittest tests.test_realpose.DecodeTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R5",
+      "critical": true,
+      "text": "RTMPose の結果から解析対象の1人を追跡し（最初は最も大きい人、以降は近い人）、別人に乗り移らない。Halpe26 を共通スキーマに対応づける（FR-POSE-001〜003）",
+      "risks": [
+        {
+          "id": "K7",
+          "text": "隣のレーンの選手に乗り移る／点の対応を間違える",
+          "verifications": [
+            {
+              "id": "V8",
+              "method": "最大の人から開始、近い人を追う、大きく離れたら見失い扱い、低信頼は無視",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            },
+            {
+              "id": "V9",
+              "method": "Halpe26 の対応と信頼度の丸め",
+              "command": "python3 -m unittest tests.test_realpose.MappingTest"
+            }
+          ]
+        },
+        {
+          "id": "K18",
+          "text": "追跡が別人に乗り移り、その印も残らない（レビュー B4）",
+          "verifications": [
+            {
+              "id": "V21",
+              "method": "範囲を広げない・大きさの違う人を選ばない・取り直しに印",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            }
+          ]
+        },
+        {
+          "id": "K19",
+          "text": "取り直しの前後をつないでイベントを作る（レビュー B4）",
+          "verifications": [
+            {
+              "id": "V22",
+              "method": "取り直しフレームで観測を区切る",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest.test_reacquired_frame_breaks_observation"
+            }
+          ]
+        },
+        {
+          "id": "K25",
+          "text": "範囲内の別人へのすり替わりに印がない（再レビュー B2）",
+          "verifications": [
+            {
+              "id": "V28",
+              "method": "短い見失いの後の回復に印、240fpsで隣の選手を取らない、2人いれば決めない",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            }
+          ]
+        },
+        {
+          "id": "K28",
+          "text": "取り直しのフレームで足が見えないと区切りが落ちる（再々レビュー N1）",
+          "verifications": [
+            {
+              "id": "V31",
+              "method": "足のない取り直しフレームでも次で区切る",
+              "command": "python3 -m unittest tests.test_events.UnobservedTest.test_reacquired_frame_without_feet_still_breaks"
+            }
+          ]
+        },
+        {
+          "id": "K29",
+          "text": "一番近い人が明らかなのに ambiguous にする（再々レビュー N2）",
+          "verifications": [
+            {
+              "id": "V32",
+              "method": "2倍以上近ければ選ぶ、同じくらいなら決めない",
+              "command": "python3 -m unittest tests.test_realpose.TrackingTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R6",
+      "critical": true,
+      "text": "地面の線を足の最下点から推定し、推定できないときは指標を出さずに理由を示す。手動で上書きできる（FR-VID-007）",
+      "risks": [
+        {
+          "id": "K8",
+          "text": "地面の推定が外れて誤った接地を検出する／人物がいないと解析全体が失敗する",
+          "verifications": [
+            {
+              "id": "V10",
+              "method": "水平・傾いた地面の推定、足が見えないときの例外",
+              "command": "python3 -m unittest tests.test_realpose.GroundTest"
+            },
+            {
+              "id": "V11",
+              "method": "アップロードから解析・地面の推定・接地時間が真値を含む",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        },
+        {
+          "id": "K20",
+          "text": "自動推定の地面が誤っていても指標が valid（レビュー B5）",
+          "verifications": [
+            {
+              "id": "V23",
+              "method": "自動推定では valid が出ず、手動指定で valid",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_auto_ground_caps_valid"
+            }
+          ]
+        },
+        {
+          "id": "K21",
+          "text": "カメラの動き・小さい人物を地面の質に反映しない（レビュー B5）",
+          "verifications": [
+            {
+              "id": "V24",
+              "method": "地面の高さが時間でずれる・人物が小さいと問題として返す",
+              "command": "python3 -m unittest tests.test_realpose.GroundTest.test_quality_problems_reported"
+            }
+          ]
+        },
+        {
+          "id": "K24",
+          "text": "固定カメラで地面が少し傾いて写るだけで「カメラが動いている」と誤判定（再レビュー B1）",
+          "verifications": [
+            {
+              "id": "V27",
+              "method": "傾き 0.02/0.05 の固定カメラで問題なし、パンするカメラでは問題あり",
+              "command": "python3 -m unittest tests.test_realpose.GroundTest"
+            }
+          ]
+        },
+        {
+          "id": "K27",
+          "text": "地面の問題が通しで指標に反映されない（再レビュー N10）",
+          "verifications": [
+            {
+              "id": "V30",
+              "method": "人物が小さいと全指標が要確認",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_ground_problem_makes_metrics_review"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R7",
+      "critical": true,
+      "text": "全種目を登録し、種目×指標の公開状態（対応・試験的・手動確認・未対応）で出せる状態の上限を決める。改善提案は承認済みルールがないので出さない（§5, R-009, FR-FB-001）",
+      "risks": [
+        {
+          "id": "K9",
+          "text": "未検証の種目で精密値を出す／投擲で走動作の指標を出す",
+          "verifications": [
+            {
+              "id": "V12",
+              "method": "やり投で接地時間・ピッチが判定不可、角度は要確認",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_discipline_status_applied"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R8",
+      "critical": true,
+      "text": "軽量モデル（balanced）の結果は正式な精密指標として出さない（ARCH-014）",
+      "risks": [
+        {
+          "id": "K10",
+          "text": "プレビューの値が valid として出る",
+          "verifications": [
+            {
+              "id": "V13",
+              "method": "balanced では valid が出ない",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_balanced_mode_is_preview"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R9",
+      "critical": true,
+      "text": "手動訂正は推論なしで再計算し、自動検出を残し、不正な訂正は保存しない。再解析は別の版として残す（§7.4, AC-008/018, FR-TIME-014）",
+      "risks": [
+        {
+          "id": "K11",
+          "text": "訂正で自動検出が消える・不正な訂正が残る・履歴が上書きされる",
+          "verifications": [
+            {
+              "id": "V14",
+              "method": "訂正後の auto 層・版の数・不正訂正の拒否",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        },
+        {
+          "id": "K15",
+          "text": "保存済みの訂正が、地面の変更・再推論のあとの再解析を恒久的に失敗させる（レビュー B1）",
+          "verifications": [
+            {
+              "id": "V18",
+              "method": "訂正→地面の変更→再解析が完了し、未適用の訂正が記録され、取り消せる",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_correction_survives_ground_change_and_can_be_revoked"
+            }
+          ]
+        },
+        {
+          "id": "K17",
+          "text": "再解析で既存のスナップショットが書き換わる（レビュー B3）",
+          "verifications": [
+            {
+              "id": "V20",
+              "method": "同じ入力の再解析で前の版のファイルが変わらず、版が増える",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_reanalysis_never_overwrites_versions"
+            }
+          ]
+        },
+        {
+          "id": "K26",
+          "text": "版のファイルだけ残ると保存できない／当てられない訂正が指標に出ない／取り消しの失敗で食い違う（再レビュー N1/N2/N6）",
+          "verifications": [
+            {
+              "id": "V29",
+              "method": "残ったファイルの番号を飛ばす、未適用の訂正で要確認、取り消しも新しい版",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_leftover_version_file_is_skipped tests.test_corrections.UnappliedCorrectionTest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R10",
+      "critical": true,
+      "text": "比較は互換性を先に確かめ、重大な不一致では数値の差を出さず、良し悪しを判定しない（FR-INTER-002/003, AC-005, FR-INTRA-007）",
+      "risks": [
+        {
+          "id": "K12",
+          "text": "撮影角度の違う動画の角度差を出す",
+          "verifications": [
+            {
+              "id": "V15",
+              "method": "正面と側面の比較で数値なし・理由あり",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_incompatible_comparison_has_no_numbers"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R11",
+      "critical": true,
+      "text": "削除は動画・派生物・姿勢・解析・DB行をまとめて消す。エクスポートできる（FR-HIST-005, AC-009）",
+      "risks": [
+        {
+          "id": "K13",
+          "text": "削除後にファイルや一覧が残る",
+          "verifications": [
+            {
+              "id": "V16",
+              "method": "削除後に 404 とフォルダなし、エクスポートが添付で返る",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_full_flow"
+            }
+          ]
+        },
+        {
+          "id": "K16",
+          "text": "解析中に削除すると、姿勢データとフレーム画像が残る（レビュー B2）",
+          "verifications": [
+            {
+              "id": "V19",
+              "method": "解析中の削除は 409",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_duplicate_job_rejected_and_cancel"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12",
+      "critical": false,
+      "text": "これまでの時間軸・指標のテストが引き続き通る",
+      "risks": [
+        {
+          "id": "K14",
+          "text": "全種目対応・地面の傾きの追加で既存の判定が変わる",
+          "verifications": [
+            {
+              "id": "V17",
+              "method": "既存の全テスト",
+              "command": "python3 -m unittest tests.test_timebase tests.test_events tests.test_metrics tests.test_real_ffprobe"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": true,
+    "blocking_findings": 0,
+    "summary": "3回目 pass（blocking 0 / non-blocking 7）。前回 B1・B2 解消、固定カメラ60/240fpsでも値は出る（区切りで減るが無にならない）。N1 取り直しフレームで足が見えないと区切りが落ちる, N2 ambiguous が慎重すぎ, N6 旧追跡の警告の見出し → 対応。N3 範囲内の重なり（README記載）, N4 自動で閉じたジョブと削除の競合（再起動で片付く）, N5 移行した旧版の状態 → 限界として記録"
+  },
+  "memory_done": true,
+  "fix_iterations": 3,
+  "gate": {
+    "ran_at": "2026-11-19T19:40:08+09:00",
+    "finished_epoch": 1795084808.4700022,
+    "stamp": "20261119-193912",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.3,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.13,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 20.15,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.7,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-check-test-js.log"
+        },
+        "real-ffprobe": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.13,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-check-real-ffprobe.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.9,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V1.log"
+        },
+        "V26": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.9,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V26.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.89,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.91,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V3.log"
+        },
+        "V4": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.16,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V4.log"
+        },
+        "V25": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.91,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V25.log"
+        },
+        "V5": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.98,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V5.log"
+        },
+        "V6": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.91,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V6.log"
+        },
+        "V7": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.63,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V7.log"
+        },
+        "V8": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.29,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V8.log"
+        },
+        "V9": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.28,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V9.log"
+        },
+        "V21": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.28,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V21.log"
+        },
+        "V22": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.31,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V22.log"
+        },
+        "V28": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.28,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V28.log"
+        },
+        "V31": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.3,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V31.log"
+        },
+        "V32": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.29,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V32.log"
+        },
+        "V10": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.34,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V10.log"
+        },
+        "V11": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.57,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V11.log"
+        },
+        "V23": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.51,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V23.log"
+        },
+        "V24": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.3,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V24.log"
+        },
+        "V27": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.33,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V27.log"
+        },
+        "V30": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.37,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V30.log"
+        },
+        "V12": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.36,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V12.log"
+        },
+        "V13": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.35,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V13.log"
+        },
+        "V14": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.53,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V14.log"
+        },
+        "V18": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.65,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V18.log"
+        },
+        "V20": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.5,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V20.log"
+        },
+        "V29": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.53,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V29.log"
+        },
+        "V15": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.84,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V15.log"
+        },
+        "V16": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.55,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V16.log"
+        },
+        "V19": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.98,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V19.log"
+        },
+        "V17": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.63,
+          "log": ".aq-dlc\\runs\\20261118-2032-functional-app\\gate\\20261119-193912-verify-V17.log"
+        }
+      }
+    }
+  },
+  "stop_blocks": 0
+}
