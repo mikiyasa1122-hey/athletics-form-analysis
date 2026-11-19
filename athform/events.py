@@ -120,17 +120,20 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
         last_state: bool | None = None
         last_frame = None
         unobserved_between = False
+        reacquire_pending = False   # 取り直しのフレームで足が見えなくても、次に見えたところで区切る（再々レビュー N1）
         for frame in index.frames:
             if not frame.usable_for_timing:
                 unobserved_between = True
                 continue
             pose = poses.get(frame.source_frame_id)
+            if pose is not None and "reacquired" in pose.flags:
+                reacquire_pending = True
             state, score = foot_state(pose, side, cfg)
             if state is None:
                 if last_state is not None:
                     unobserved_between = True
                 continue
-            if last_state is not None and last_frame is not None and pose is not None and "reacquired" in pose.flags:
+            if last_state is not None and last_frame is not None and reacquire_pending:
                 # 対象の人物を見失って取り直した。別人の可能性があるので、つながず区切る（レビュー B4）
                 breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
                                                last_frame.timestamp, frame.timestamp,
@@ -167,6 +170,7 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                     quality_reasons=tuple(reasons), model_score=score,
                 ))
             last_state, last_frame, unobserved_between = state, frame, False
+            reacquire_pending = False
     return Detection(sort_events(events), sorted(breaks, key=lambda b: (b.lower, b.side)))
 
 

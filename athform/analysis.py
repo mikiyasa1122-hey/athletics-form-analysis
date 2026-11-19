@@ -187,12 +187,13 @@ def apply_ground_quality(metrics: list[MetricResult], gq: dict[str, Any]) -> Non
     from .metrics import ESTIMATED, REVIEW, UNAVAILABLE, VALID, worse  # noqa: PLC0415
     method = gq.get("method")
     problems = list(gq.get("problems") or [])
+    pose_problems = list(gq.get("pose_problems") or [])
     for m in metrics:
         if m.status == UNAVAILABLE:
             continue
-        if problems:
+        if problems or pose_problems:
             m.status = worse(m.status, REVIEW)
-            m.reasons += [f"地面の線: {p}" for p in problems]
+            m.reasons += [f"地面の線: {p}" for p in problems] + [f"姿勢推定: {p}" for p in pose_problems]
         elif method == "auto":
             if m.status == VALID:
                 m.status = ESTIMATED

@@ -127,7 +127,8 @@ def _person_stats(kps, scores, thr: float) -> tuple[tuple[float, float], float] 
 SPEED_BODY_PER_S = 8.0   # 1秒あたりに動ける距離（体の大きさの倍数）。短距離のトップ選手でも画面上はこれ以下
 GATE_MIN, GATE_MAX = 0.15, 0.6   # 同じ人とみなす範囲（体の大きさの倍数）の下限と上限
 SIZE_RATIO = 1.5    # 体の大きさがこの比を超えて変わる人は別人とみなす
-REACQUIRE_AFTER_S = 0.5   # これだけ見失ったら、最も大きい人を選び直す（秒で決める: フレーム数だとFPSで意味が変わる）
+REACQUIRE_AFTER_S = 0.5   # これだけ見失ったら選び直す（秒で決める: フレーム数だとFPSで意味が変わる）
+CLEAR_MARGIN = 2.0        # 範囲内に複数いても、一番近い人が二番目よりこの倍率以上近ければ選ぶ
 
 
 def choose_target(people, state: TrackState, thr: float, dt: float = 1 / 30) -> tuple[int | None, bool]:
@@ -155,7 +156,13 @@ def choose_target(people, state: TrackState, thr: float, dt: float = 1 / 30) -> 
     def same_person(t) -> bool:
         (c, sz), _ = t
         return math.hypot(c[0] - prev_c[0], c[1] - prev_c[1]) <= gate and 1 / SIZE_RATIO <= sz / prev_s <= SIZE_RATIO
-    candidates = [t for t in stats if same_person(t)]
+    def dist(t) -> float:
+        (c, _), _ = t
+        return math.hypot(c[0] - prev_c[0], c[1] - prev_c[1])
+    candidates = sorted((t for t in stats if same_person(t)), key=dist)
+    # 2人以上いても、一番近い人が二番目より2倍以上近ければ、その人とみなす（再々レビュー N2）
+    if len(candidates) > 1 and dist(candidates[0]) * CLEAR_MARGIN <= dist(candidates[1]):
+        candidates = candidates[:1]
     if len(candidates) == 1:
         (center, size), idx = candidates[0]
         reacquired = state.lost > 0
@@ -166,7 +173,9 @@ def choose_target(people, state: TrackState, thr: float, dt: float = 1 / 30) -> 
         state.ambiguous = True
         return None, False
     if stats and state.since_seen >= REACQUIRE_AFTER_S:
-        (center, size), idx = max(stats, key=lambda t: t[0][1])
+        # 選び直しは、最後に見た位置に近い人を優先する（大きさの近い人の中で）。印は付ける
+        similar = [t for t in stats if 1 / SIZE_RATIO <= t[0][1] / prev_s <= SIZE_RATIO] or stats
+        (center, size), idx = min(similar, key=dist)
         state.center, state.size, state.lost, state.since_seen = center, size, 0, 0.0
         return idx, True
     return None, False
@@ -196,9 +205,9 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
         model_id="rtmlib.BodyWithFeet(halpe26)",
         weights_version=f"{os.path.basename(cfg['det'])} + {os.path.basename(cfg['pose'])}",
         config={"mode": mode, "backend": "onnxruntime", "device": "cpu", "min_confidence": min_confidence,
-                "tracking": (f"v2: largest-first; gate {SPEED_BODY_PER_S} body/s clamped {GATE_MIN}-{GATE_MAX}; "
-                             f"size ratio <= {SIZE_RATIO}; ambiguous skipped; any recovery after loss marked; "
-                             f"reselect after {REACQUIRE_AFTER_S}s")},
+                "tracking": (f"v2.1: largest-first; gate {SPEED_BODY_PER_S} body/s clamped {GATE_MIN}-{GATE_MAX}; "
+                             f"size ratio <= {SIZE_RATIO}; nearest if {CLEAR_MARGIN}x clearer else ambiguous; "
+                             f"any recovery after loss marked; reselect nearest after {REACQUIRE_AFTER_S}s")},
     )
     # 画像は一時フォルダに書き、枚数の照合が通ってから入れ替える。途中で失敗・取消しても、
     # 既存の版の画像（原本フレームIDで対応）を書き換えない（レビュー N5）

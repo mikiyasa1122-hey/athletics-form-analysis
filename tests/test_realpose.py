@@ -78,6 +78,12 @@ class TrackingTest(unittest.TestCase):
         choose_target([person(400, 300, 100)], st, 0.3, dt=1 / 240)
         self.assertEqual(choose_target([person(430, 305, 120)], st, 0.3, dt=1 / 240), (None, False))
 
+    def test_clearly_nearest_of_two_is_chosen(self):
+        # 再々レビュー N2: 範囲内に2人いても、一番近い人が二番目より2倍以上近ければ選ぶ（実映像のフレーム335の形）
+        st = TrackState()
+        choose_target([person(467, 149, 120)], st, 0.3)
+        self.assertEqual(choose_target([person(503, 149, 120), person(470, 149, 120)], st, 0.3), (1, False))
+
     def test_two_candidates_is_ambiguous(self):
         st = TrackState()
         choose_target([person(400, 300, 100)], st, 0.3)
