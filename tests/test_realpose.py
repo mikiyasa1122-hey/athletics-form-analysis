@@ -4,7 +4,7 @@ import os
 import unittest
 
 from athform.realpose import (HALPE26, TrackState, choose_target, estimate_ground, iter_bmp_frames, to_pose_frame,
-                              PoseRunError)
+                              PoseRunError, pack_person, people_summary, resolve_seed, track_people)
 from athform.synth import GROUND_Y, SprintModel
 from athform.pose import KEYPOINTS, Keypoint, PoseFrame
 from athform.timebase import build_frame_index
@@ -89,6 +89,83 @@ class TrackingTest(unittest.TestCase):
         choose_target([person(400, 300, 100)], st, 0.3)
         self.assertEqual(choose_target([person(405, 300, 100), person(395, 302, 100)], st, 0.3), (None, False))
         self.assertTrue(st.ambiguous)
+
+
+def halpe(cx, cy, size, score=0.9):
+    kps, sc = person(cx, cy, size, score)
+    return {"k": kps, "s": sc}
+
+
+class TrackPeopleTest(unittest.TestCase):
+    """解析の後で人を選び直す: 保存した全員の点から、選んだ人を前後両方向に追う（推論はしない）。"""
+
+    def scene(self, n=30):
+        # 2人が平行に走る。A は大きく（最初は自動でこちらが選ばれる）、B は 500px 下を少し小さく
+        people = {}
+        order = []
+        for i in range(n):
+            x = 100 + 10 * i
+            people[i] = [halpe(x, 300, 120), halpe(x + 5, 800, 100)]
+            order.append((i, i / 30))
+        return people, order
+
+    def hip_y(self, pf):
+        return pf.keypoints["left_hip"].y
+
+    def test_default_tracks_largest(self):
+        people, order = self.scene()
+        frames, failed = track_people(people, order)
+        self.assertEqual(failed, [])
+        self.assertTrue(all(self.hip_y(frames[i]) == 300 for i in range(30)))
+
+    def test_seed_in_middle_tracks_both_directions(self):
+        people, order = self.scene()
+        frames, failed = track_people(people, order, seed=(15, 1))
+        self.assertEqual(failed, [])
+        self.assertTrue(all(self.hip_y(frames[i]) == 800 for i in range(30)))   # 前にも後ろにも B を追う
+        self.assertFalse(any("reacquired" in frames[i].flags for i in range(30)))
+
+    def test_backward_reacquire_marks_same_frame_as_forward(self):
+        # 再レビュー B2: B が 20〜22 コマで見えない。後ろ向きに追っても、印は欠けの直後（実時間）の 23 に付く
+        people, order = self.scene()
+        for i in (20, 21, 22):
+            people[i] = people[i][:1]
+        fwd, _ = track_people(people, order, seed=(5, 1))
+        back, _ = track_people(people, order, seed=(28, 1))
+        mark = lambda fr: [i for i in range(30) if "reacquired" in fr[i].flags]
+        self.assertEqual(mark(fwd), [23])
+        self.assertEqual(mark(back), [23])
+
+    def test_resolve_seed_by_position_not_order(self):
+        # 再レビュー B3: 推論をやり直して検出の順番が変わっても、位置と大きさで同じ人を探す
+        people, _ = self.scene()
+        target = {"frame_id": 10, "person": 1, "center": [205.0, 800.0], "size": people_summary(people[10])[1]["size"]}
+        self.assertEqual(resolve_seed(people, target), 1)
+        swapped = {k: list(reversed(v)) for k, v in people.items()}
+        self.assertEqual(resolve_seed(swapped, target), 0)
+        gone = {k: v[:1] for k, v in people.items()}
+        with self.assertRaises(PoseRunError):
+            resolve_seed(gone, target)
+
+    def test_pack_person_drops_non_finite(self):
+        p = pack_person([[1.0, float("nan")], [2.0, 3.0]], [0.9, float("inf")])
+        self.assertEqual(p["s"], [0.0, 0.0])
+        self.assertEqual(p["k"][1], [0.0, 0.0])
+
+    def test_seed_validation(self):
+        people, order = self.scene()
+        with self.assertRaises(PoseRunError):
+            track_people(people, order, seed=(999, 0))
+        with self.assertRaises(PoseRunError):
+            track_people(people, order, seed=(3, 5))
+
+    def test_people_summary_for_picking(self):
+        people, _ = self.scene()
+        listed = people_summary(people[0])
+        self.assertEqual([p["index"] for p in listed], [0, 1])
+        x0, y0, x1, y1 = listed[1]["box"]
+        self.assertTrue(x0 <= listed[1]["center"][0] <= x1 and y0 <= listed[1]["center"][1] <= y1)
+        self.assertIn("left_hip", listed[1]["keypoints"])
 
 
 class MappingTest(unittest.TestCase):

@@ -1,0 +1,185 @@
+{
+  "run_id": "20261119-2054-person-select",
+  "title": "person-select",
+  "status": "in_progress",
+  "phase": "04_gate",
+  "created": "2026-11-19T20:54:50+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "P-0003",
+    "F-0015",
+    "F-0018",
+    "W-0003"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "解析の後で、映像の中の人を選び直せる。保存した全員の点から、選んだコマのその人を前後両方向に追い、推論なしで新しい版として計算し直す",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "選んだ人を片方向にしか追わない／別人を追う",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "2人が並走する場面で、途中のコマで選んだ人を最初まで遡って追う",
+              "command": "python3 -m unittest tests.test_realpose.TrackPeopleTest"
+            },
+            {
+              "id": "V2",
+              "method": "API で2人目を選ぶと、版が増え、最初のコマまで2人目を追う。前の版は変わらない",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_choose_another_person_after_analysis"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "姿勢推定をやり直しても、選んだ人を追い続ける",
+      "risks": [
+        {
+          "id": "K2",
+          "text": "やり直すと自動の選び方に戻る",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "選んだ後に推論をやり直しても2人目を追う",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_choose_another_person_after_analysis"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "不正な指定・人の候補がない動画・解析中は、選び直しを受け付けず理由を返す",
+      "risks": [
+        {
+          "id": "K3",
+          "text": "存在しない人やコマで壊れる／古い動画で黙って失敗する",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "存在しない番号・型違い・候補なしで 400",
+              "command": "python3 -m unittest tests.test_server.ServerTest.test_choose_person_needs_saved_people"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": true,
+      "text": "これまでの追跡・解析・画面の振る舞いは変わらない",
+      "risks": [
+        {
+          "id": "K4",
+          "text": "追跡の作り直しで既存の判定が変わる",
+          "verifications": [
+            {
+              "id": "V5",
+              "method": "既存の全テスト",
+              "command": "python3 -m unittest tests.test_realpose tests.test_events tests.test_server"
+            },
+            {
+              "id": "V6",
+              "method": "画面の静的検査とプレイヤー",
+              "command": "node --test web/tests/player-core.test.js web/tests/static.test.js"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": false,
+    "blocking_findings": 0,
+    "summary": ""
+  },
+  "memory_done": false,
+  "fix_iterations": 0,
+  "gate": {
+    "ran_at": "2026-11-19T21:00:05+09:00",
+    "finished_epoch": 1795089605.2226534,
+    "stamp": "20261119-205849",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.47,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.22,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 33.29,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.25,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-check-test-js.log"
+        },
+        "real-ffprobe": {
+          "pass": true,
+          "exit": 0,
+          "sec": 5.33,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-check-real-ffprobe.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.62,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V1.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.14,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.05,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V3.log"
+        },
+        "V4": {
+          "pass": true,
+          "exit": 0,
+          "sec": 1.98,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V4.log"
+        },
+        "V5": {
+          "pass": true,
+          "exit": 0,
+          "sec": 25.59,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V5.log"
+        },
+        "V6": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.99,
+          "log": ".aq-dlc\\runs\\20261119-2054-person-select\\gate\\20261119-205849-verify-V6.log"
+        }
+      }
+    }
+  },
+  "stop_blocks": 1
+}

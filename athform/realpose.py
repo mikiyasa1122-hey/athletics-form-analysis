@@ -60,6 +60,8 @@ class PoseRunResult:
     image_size: tuple[int, int]
     view_scale: float
     failed: list[int] = field(default_factory=list)
+    # フレームごとの、検出した全員の点（[{"k": [[x, y]...26], "s": [score...26]}]）。解析の後で人を選び直すのに使う
+    people: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def model_info(self) -> ModelInfo:
@@ -218,13 +220,10 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
     shutil.rmtree(tmp_dir, ignore_errors=True)
     os.makedirs(tmp_dir)
     total = len(index.frames)
-    frames: dict[int, PoseFrame] = {}
-    failed: list[int] = []
-    state = TrackState()
+    people_by_fid: dict[int, list[dict[str, Any]]] = {}
     size = (0, 0)
     scale = 1.0
     count = 0   # 実際に取り出した枚数（0枚でも正しく数える）
-    t_prev = None
     try:
         for bmp in iter_bmp_frames(ffmpeg, video):
             if cancelled and cancelled():
@@ -244,20 +243,7 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
                 with open(os.path.join(tmp_dir, f"{fid}.jpg"), "wb") as fh:
                     fh.write(jpg.tobytes())
             kps, scores = model(img)
-            people = list(zip(kps, scores)) if len(kps) else []
-            t_now = index.frames[count].timestamp
-            dt = float(t_now - t_prev) if t_prev is not None else 0.0
-            t_prev = t_now
-            target, reacquired = choose_target(people, state, min_confidence, dt)
-            if target is None:
-                flag = "ambiguous" if state.ambiguous else ("tracking_lost" if people else "no_person")
-                pf = PoseFrame(fid, {name: None for name in KEYPOINTS}, [flag])
-                failed.append(fid)
-            else:
-                pf = to_pose_frame(fid, *people[target])
-                if reacquired:
-                    pf.flags.append("reacquired")
-            frames[fid] = pf
+            people_by_fid[fid] = [pack_person(k, sc) for k, sc in zip(kps, scores)] if len(kps) else []
             count += 1
             if progress:
                 progress(count, total)
@@ -269,7 +255,134 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
         os.replace(tmp_dir, out_dir)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-    return PoseRunResult(info, frames, size, scale, failed)
+    frames, failed = track_people(people_by_fid, [(f.source_frame_id, float(f.timestamp)) for f in index.frames],
+                                  min_confidence)
+    return PoseRunResult(info, frames, size, scale, failed, people_by_fid)
+
+
+def pack_person(kps, scores) -> dict[str, Any]:
+    """1人分の点を、保存できる形（小数を丸めたリスト）にする。"""
+    k, sc = [], []
+    for (x, y), v in zip(kps, scores):
+        x, y, v = float(x), float(y), float(v)
+        if math.isfinite(x) and math.isfinite(y) and math.isfinite(v):
+            k.append([round(x, 1), round(y, 1)])
+            sc.append(round(v, 3))
+        else:
+            k.append([0.0, 0.0])
+            sc.append(0.0)
+    return {"k": k, "s": sc}
+
+
+def _track_pass(people_by_fid, order, min_conf, seed_idx: int | None, backward: bool = False):
+    """order の順に追跡する。seed_idx があれば、最初のフレームではその人から始める。
+
+    取り直しの印は「欠けの後に最初に見えたコマ」（実時間で）に付ける。events はそのコマの直前で観測を区切るので、
+    後ろ向きに追うときは、印を「後ろ向きで欠ける前に最後に見えていたコマ」に移す（再レビュー B2）。
+    """
+    state = TrackState()
+    out: dict[int, tuple[int | None, bool, str | None]] = {}
+    last_seen = None
+    t_prev = None
+    for n, (fid, t) in enumerate(order):
+        people = [(p["k"], p["s"]) for p in people_by_fid.get(fid, [])]
+        dt = abs(t - t_prev) if t_prev is not None else 0.0
+        t_prev = t
+        if n == 0 and seed_idx is not None:
+            st = _person_stats(*people[seed_idx], min_conf) if 0 <= seed_idx < len(people) else None
+            if st is None:
+                raise PoseRunError("選んだ人の点が少なすぎて追えない。はっきり写っているコマで選ぶ")
+            state.center, state.size = st
+            out[fid] = (seed_idx, False, None)
+            continue
+        idx, reacq = choose_target(people, state, min_conf, dt)
+        flag = None
+        if idx is None:
+            flag = "ambiguous" if state.ambiguous else ("tracking_lost" if people else "no_person")
+        if reacq and backward and last_seen is not None:
+            i2, _, f2 = out[last_seen]
+            out[last_seen] = (i2, True, f2)
+            reacq = False
+        out[fid] = (idx, reacq, flag)
+        if idx is not None:
+            last_seen = fid
+    return out
+
+
+def resolve_seed(people_by_fid: dict[int, list[dict[str, Any]]], target: dict[str, Any], min_conf: float = 0.3) -> int:
+    """選んだ人を、保存した位置と大きさで探す（推論をやり直すと検出の順番が変わるので、番号では探さない: 再レビュー B3）。"""
+    fid = int(target["frame_id"])
+    people = people_by_fid.get(fid, [])
+    if "center" not in target:   # 古い形式（番号だけ）
+        idx = int(target["person"])
+        if not 0 <= idx < len(people):
+            raise PoseRunError("選んだ人が見つからない")
+        return idx
+    cx, cy = target["center"]
+    size = float(target["size"])
+    cands = []
+    for i, p in enumerate(people):
+        st = _person_stats(p["k"], p["s"], min_conf)
+        if st is None:
+            continue
+        (x, y), sz = st
+        d = math.hypot(x - cx, y - cy)
+        if d <= 0.3 * size and 1 / SIZE_RATIO <= sz / size <= SIZE_RATIO:
+            cands.append((d, i))
+    cands.sort()
+    if not cands:
+        raise PoseRunError("選んだ人が、そのコマで見つからなくなった")
+    if len(cands) > 1 and cands[0][0] * CLEAR_MARGIN > cands[1][0]:
+        raise PoseRunError("選んだ人の近くに別の人がいて、どちらか決められない")
+    return cands[0][1]
+
+
+def track_people(people_by_fid: dict[int, list[dict[str, Any]]], order: list[tuple[int, float]], min_conf: float = 0.3,
+                 seed: tuple[int, int] | None = None) -> tuple[dict[int, PoseFrame], list[int]]:
+    """保存した全員の点から、解析する1人を追跡して姿勢の記録を作る。推論はやり直さない。
+
+    seed=(原本フレームID, そのフレームでの人の番号) を渡すと、そのフレームのその人から前後両方向に追う
+    （解析の後で、利用者が映像で人を選び直すため）。seed がなければ、最初のフレームで最も大きい人から追う。
+    """
+    if seed is None:
+        result = _track_pass(people_by_fid, order, min_conf, None)
+    else:
+        fid0, idx0 = seed
+        pos = next((i for i, (f, _) in enumerate(order) if f == fid0), None)
+        if pos is None:
+            raise PoseRunError(f"コマ {fid0} は原本フレームにない")
+        fwd = _track_pass(people_by_fid, order[pos:], min_conf, idx0)
+        back = _track_pass(people_by_fid, list(reversed(order[:pos + 1])), min_conf, idx0, backward=True)
+        result = {**back, **fwd}
+    frames: dict[int, PoseFrame] = {}
+    failed: list[int] = []
+    for fid, _ in order:
+        idx, reacq, flag = result[fid]
+        people = people_by_fid.get(fid, [])
+        if idx is None:
+            frames[fid] = PoseFrame(fid, {name: None for name in KEYPOINTS}, [flag or "no_person"])
+            failed.append(fid)
+        else:
+            pf = to_pose_frame(fid, people[idx]["k"], people[idx]["s"])
+            if reacq:
+                pf.flags.append("reacquired")
+            frames[fid] = pf
+    return frames, failed
+
+
+def people_summary(people: list[dict[str, Any]], min_conf: float = 0.3) -> list[dict[str, Any]]:
+    """画面で選べるように、1フレームの各人の中心と囲む枠を返す。"""
+    out = []
+    for i, p in enumerate(people):
+        st = _person_stats(p["k"], p["s"], min_conf)
+        pts = [xy for xy, sc in zip(p["k"], p["s"]) if sc >= min_conf]
+        if st is None or not pts:
+            continue
+        xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+        out.append({"index": i, "center": [round(st[0][0], 1), round(st[0][1], 1)], "size": round(st[1], 1),
+                    "box": [min(xs), min(ys), max(xs), max(ys)],
+                    "keypoints": {HALPE26[h]: [p["k"][h][0], p["k"][h][1], p["s"][h]] for h in HALPE26}})
+    return out
 
 
 def estimate_ground(frames: dict[int, PoseFrame], min_conf: float = 0.3) -> tuple[DetectorConfig, dict[str, Any]]:

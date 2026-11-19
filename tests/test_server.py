@@ -31,6 +31,21 @@ def fake_probe_factory(spec):
     return runner
 
 
+HALPE_INDEX = {"nose": 0, "left_shoulder": 5, "right_shoulder": 6, "left_hip": 11, "right_hip": 12, "left_knee": 13,
+               "right_knee": 14, "left_ankle": 15, "right_ankle": 16, "left_toe": 20, "right_toe": 21, "left_heel": 24,
+               "right_heel": 25}
+
+
+def as_halpe(points, dy=0.0):
+    k = [[0.0, 0.0] for _ in range(26)]
+    s = [0.0] * 26
+    for name, (x, y, c) in points.items():
+        if name in HALPE_INDEX:
+            k[HALPE_INDEX[name]] = [x, y + dy]
+            s[HALPE_INDEX[name]] = c
+    return {"k": k, "s": s}
+
+
 def fake_pose_fn(ffmpeg, video, index, out_dir, mode, progress, cancelled):
     os.makedirs(out_dir, exist_ok=True)
     frames = {}
@@ -43,8 +58,11 @@ def fake_pose_fn(ffmpeg, video, index, out_dir, mode, progress, cancelled):
         with open(os.path.join(out_dir, f"{f.source_frame_id}.jpg"), "wb") as fh:
             fh.write(b"\xff\xd8\xff\xd9")
         progress(n + 1, len(index.frames))
+    # 全員の点も保存する: 1人目は合成の走者、2人目は 600px 下を走る別の人（体の大きさは同じ）
+    people = {f.source_frame_id: [as_halpe(MODEL.pose_at(float(f.timestamp))),
+                                  as_halpe(MODEL.pose_at(float(f.timestamp)), dy=-560)] for f in index.frames}
     return PoseRunResult(ModelInfo("fake-rtmpose", "0", {"mode": mode, "min_confidence": 0.3}), frames,
-                         (1280, 1000), 1.0, [])
+                         (1280, 1000), 1.0, [], people)
 
 
 class ServerTest(unittest.TestCase):
@@ -388,6 +406,114 @@ class ServerTest(unittest.TestCase):
         srv2.app.jobs.wait_idle(5)
         srv2.server_close()
         srv2.app.store.close()
+
+    def test_choose_another_person_after_analysis(self):
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertTrue(snap["people_available"])
+        fid = snap["frames"][100]["source_frame_id"]
+        s, d, _ = self.req("GET", f"/api/videos/{vid}/people?frame={fid}")
+        self.assertEqual(s, 200)
+        self.assertEqual(len(d["people"]), 2)
+        self.assertEqual(d["tracked"], 0)   # 自動では1人目
+        # 2人目を選ぶ → 推論なしで追い直し、新しい版になる
+        s, snap2, _ = self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 1})
+        self.assertEqual(s, 200, snap2)
+        self.assertEqual(snap2["revision"], snap["revision"] + 1)
+        self.assertEqual((snap2["target"]["frame_id"], snap2["target"]["person"]), (fid, 1))
+        self.assertIn("center", snap2["target"])   # 位置と大きさも残す（順番が変わっても探せる）
+        hip = next(p for p in snap2["pose_raw"] if p["source_frame_id"] == snap2["frames"][0]["source_frame_id"])
+        self.assertLess(hip["keypoints"]["left_hip"][1], 300)   # 最初のコマまで遡って2人目（上の人）を追っている
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/people?frame={fid}")[1]["tracked"], 1)
+        # 前の版は変わらない
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/analysis?revision={snap['revision']}")[1]["analysis_id"],
+                         snap["analysis_id"])
+        # 不正な指定
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 9})[0], 400)
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/target", {"frame_id": "x", "person": 1})[0], 400)
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/people?frame=abc")[0], 400)
+        # 推論をやり直しても、選んだ人を追い続ける
+        job = self.analyze(vid)
+        self.assertEqual(job["state"], "completed")
+        snap3 = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        hip3 = next(p for p in snap3["pose_raw"] if p["source_frame_id"] == snap3["frames"][0]["source_frame_id"])
+        self.assertLess(hip3["keypoints"]["left_hip"][1], 300)
+
+    def test_rerun_with_changed_detection_order_keeps_person(self):
+        # 再レビュー B3: 推論をやり直して検出の順番が変わっても、選んだ人（上を走る人）を追う
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        fid = self.req("GET", f"/api/videos/{vid}/analysis")[1]["frames"][100]["source_frame_id"]
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 1})[0], 200)
+
+        def swapped(*a):
+            res = fake_pose_fn(*a)
+            res.people = {k: list(reversed(v)) for k, v in res.people.items()}
+            return res
+        self.srv.app.jobs.pose_fn = swapped
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        hip = next(p for p in snap["pose_raw"] if p["source_frame_id"] == fid)
+        self.assertLess(hip["keypoints"]["left_hip"][1], 300)
+        self.assertFalse(snap["target"].get("lost"))
+
+        def only_one(*a):   # 選んだ人がいなくなった → 自動に戻したことを記録する
+            res = fake_pose_fn(*a)
+            res.people = {k: v[:1] for k, v in res.people.items()}
+            return res
+        self.srv.app.jobs.pose_fn = only_one
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertTrue(snap["target"]["lost"])
+        self.assertTrue(snap["target"]["reason"])
+
+    def test_switching_person_resets_ground_and_corrections(self):
+        # 再レビュー N1・N2: 前の人のための地面の指定と修正は、新しい人には当てない（取り消しは記録に残る）
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        toe = next(e for e in snap["events"]["auto"] if e["event_type"] == "toe_off")
+        self.req("POST", f"/api/videos/{vid}/corrections", {"action": "delete", "event_id": toe["event_id"], "reason": "x"})
+        self.req("PATCH", f"/api/videos/{vid}", {"ground_override": {"ground_y": 899.0, "contact_band_px": 10}})
+        fid = snap["frames"][100]["source_frame_id"]
+        s, snap2, _ = self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 1})
+        self.assertEqual(s, 200, snap2)
+        self.assertEqual(len(snap2["target_change_notes"]), 2)
+        v = self.req("GET", f"/api/videos/{vid}")[1]
+        self.assertIsNone(v["video"]["ground_override"])
+        self.assertTrue(v["corrections"][0]["revoked_at"])
+        self.assertEqual(snap2["ground_quality"]["method"], "auto")
+
+    def test_choose_person_with_too_few_points_is_400(self):
+        # 再レビュー B4: 点が少なすぎる人を選ぶと、理由付きで 400（接続が切れない）
+        def with_ghost(*a):
+            res = fake_pose_fn(*a)
+            ghost = {"k": [[0.0, 0.0]] * 26, "s": [0.0] * 26}
+            ghost["s"] = [0.9, 0.9, 0.9] + [0.0] * 23
+            res.people = {k: v + [ghost] for k, v in res.people.items()}
+            return res
+        self.srv.app.jobs.pose_fn = with_ghost
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        fid = self.req("GET", f"/api/videos/{vid}/analysis")[1]["frames"][50]["source_frame_id"]
+        s, b, _ = self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 2})
+        self.assertEqual(s, 400)
+        self.assertIn("点が少なすぎ", b["error"])
+
+    def test_choose_person_needs_saved_people(self):
+        def old_pose_fn(*a):
+            res = fake_pose_fn(*a)
+            res.people = {}
+            return res
+        self.srv.app.jobs.pose_fn = old_pose_fn
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertFalse(snap["people_available"])
+        fid = snap["frames"][0]["source_frame_id"]
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/people?frame={fid}")[0], 400)
+        self.assertEqual(self.req("POST", f"/api/videos/{vid}/target", {"frame_id": fid, "person": 0})[0], 400)
 
     def test_static_index(self):
         s, body, r = self.req("GET", "/")

@@ -129,6 +129,7 @@
     stopPolling();
     stopPlayback();
     endPick();
+    endPersonPick();
     const h = location.hash || "#/";
     for (const v of ["view-home", "view-video", "view-compare"]) $(v).hidden = true;
     $("nav-home").removeAttribute("aria-current");
@@ -346,7 +347,7 @@
       if (ev.key === "ArrowRight") { ev.preventDefault(); stepBy(ev.shiftKey ? 10 : 1); }
       else if (ev.key === "ArrowLeft") { ev.preventDefault(); stepBy(ev.shiftKey ? -10 : -1); }
       else if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
-      else if (ev.key === "Escape") endPick();
+      else if (ev.key === "Escape") { endPick(); endPersonPick(); }
     });
 
     // タイムライン: クリック・ドラッグで移動、印をクリックで選ぶ
@@ -394,6 +395,7 @@
     // 地面の指定（2点）・自動推定に戻す
     $("stage").addEventListener("click", onStageClick);
     $("ground-pick").addEventListener("click", startPick);
+    $("person-pick").addEventListener("click", () => (personMode ? endPersonPick() : startPersonPick()));
     $("ground-reset").addEventListener("click", () => {
       if (confirm("自分で決めた地面の線をやめて、自動推定に戻します。計算し直します。")) saveGround(null);
     });
@@ -412,6 +414,8 @@
 
   async function openVideo(id) {
     setupVideoView();
+    peopleGen += 1;
+    peopleCache.clear();
     current = await api("GET", "/api/videos/" + id);
     const v = current.video;
     $("v-title").textContent = disciplineName(v.discipline) + (v.record ? "　" + v.record : "");
@@ -484,6 +488,7 @@
     $("edit-toggle").disabled = !viewingLatest;
     if (!viewingLatest && editing) setEditing(false);
     $("ground-pick").disabled = !viewingLatest;
+    $("person-pick").disabled = !viewingLatest;
     $("ground-reset").hidden = !(viewingLatest && current.video.ground_override);
   }
 
@@ -556,10 +561,19 @@
     head.appendChild(node("span", title, "trust-level"));
     box.appendChild(head);
     box.appendChild(node("p", text));
+    const tg = s.target || {};
+    box.appendChild(node("p", tg.lost
+      ? "選んだ人が、姿勢推定をやり直した後に見つからなかったため、自動の選び方（最初のコマで最も大きい人）に戻しました。選び直してください（" + (tg.reason || "") + "）"
+      : tg.frame_id !== undefined
+        ? "解析している人: コマ " + tg.frame_id + " で選んだ人（前後を追っています）"
+        : "解析している人: 最初のコマで最も大きく写った人（自動）。違うときは選び直せます", tg.lost ? "small" : "muted small"));
     if (reasons.length) {
       const ul = node("ul");
       for (const r of reasons) ul.appendChild(node("li", r));
       box.appendChild(ul);
+    }
+    if (s.people_available && viewingLatest) {
+      actions.push(button(tg.frame_id !== undefined && !tg.lost ? "解析する人を選び直す" : "解析する人を選ぶ", startPersonPick, "quiet"));
     }
     if (actions.length) {
       const row = node("div", null, "row wrap");
@@ -790,6 +804,7 @@
   function startPick() {
     if (!model) return;
     if (!viewingLatest) { toast("前の版を見ているときは、地面を指定できません"); return; }
+    endPersonPick();
     pick = [];
     $("stage").classList.add("picking");
     $("pick-hint").textContent = "地面（足が着く線）の上を、左寄りで1回クリックしてください。Esc でやめる";
@@ -801,12 +816,97 @@
     $("stage").classList.remove("picking");
     $("pick-hint").hidden = true;
   }
-  function onStageClick(ev) {
-    if (!pick || !model) return;
+  function stagePoint(ev) {
     const rect = $("stage").getBoundingClientRect();
     const size = PC.imageSize(model);
-    const p = { x: (ev.clientX - rect.left) / rect.width * size.width, y: (ev.clientY - rect.top) / rect.height * size.height };
-    pick.push(p);
+    return { x: (ev.clientX - rect.left) / rect.width * size.width, y: (ev.clientY - rect.top) / rect.height * size.height };
+  }
+
+  // ---------- 解析する人を選ぶ（映像の中の人をクリック） ----------
+  let personMode = false;
+  const peopleCache = new Map();   // 原本フレームID → そのコマの全員
+  let peopleGen = 0;               // 選び直すたびに増やす（古い取得結果を捨てる）
+
+  function startPersonPick() {
+    if (!model) return;
+    if (!viewingLatest) { toast("前の版を見ているときは、人を選べません"); return; }
+    if (!model.snapshot.people_available) {
+      toast("この動画は写っている人の候補を保存していません。「…」→「姿勢推定からやり直す」の後に選べます", true);
+      return;
+    }
+    endPick();
+    stopPlayback();
+    personMode = true;
+    $("person-pick").setAttribute("aria-pressed", "true");
+    $("person-pick").textContent = "選ぶのをやめる";
+    $("stage").classList.add("picking");
+    $("pick-hint").textContent = "解析したい人をクリックしてください。←→でコマを送って、はっきり写っているコマで選べます（Esc でやめる）";
+    $("pick-hint").hidden = false;
+    $("stage").scrollIntoView({ block: "center", behavior: "smooth" });
+    render();
+  }
+  function endPersonPick() {
+    if (!personMode) return;
+    personMode = false;
+    $("person-pick").setAttribute("aria-pressed", "false");
+    $("person-pick").textContent = "人を選ぶ";
+    $("stage").classList.remove("picking");
+    $("pick-hint").hidden = true;
+    if (model) render();
+  }
+  function peopleFor(frameId) {
+    if (peopleCache.has(frameId)) return peopleCache.get(frameId);
+    if (state.playing) return null;   // 再生中は取りに行かない（止めたコマで取る）
+    peopleCache.set(frameId, null);   // 取得中
+    const gen = peopleGen;
+    api("GET", "/api/videos/" + current.video.id + "/people?frame=" + frameId)
+      .then((d) => {
+        if (gen !== peopleGen) return;
+        peopleCache.set(frameId, d);
+        if (personMode && model && PC.view(model, state).frameId === frameId) render();
+      })
+      .catch(() => { if (gen === peopleGen) peopleCache.delete(frameId); });
+    return null;
+  }
+  function personAt(data, p) {
+    let best = null, bd = Infinity;
+    for (const q of data.people) {
+      const [x0, y0, x1, y1] = q.box;
+      const padX = (x1 - x0) * 0.15 + 8, padY = (y1 - y0) * 0.1 + 8;
+      const inside = p.x >= x0 - padX && p.x <= x1 + padX && p.y >= y0 - padY && p.y <= y1 + padY;
+      const d = Math.hypot(p.x - q.center[0], p.y - q.center[1]);
+      if (inside && d < bd) { bd = d; best = q; }
+    }
+    return best;
+  }
+  async function choosePerson(ev) {
+    const v = PC.view(model, state);
+    const data = peopleCache.get(v.frameId);
+    if (!data) return;
+    const who = personAt(data, stagePoint(ev));
+    if (!who) { toast("その位置には人が見つかりませんでした。体の上をクリックしてください"); return; }
+    if (who.index === data.tracked) { toast("その人はすでに解析しています"); endPersonPick(); return; }
+    const hasCorrections = (current.corrections || []).some((c) => !c.revoked_at);
+    const hasGround = !!current.video.ground_override;
+    if ((hasCorrections || hasGround) && !confirm("解析する人を変えると、" +
+      [hasCorrections ? "前の人への接地・離地の修正は取り消し（記録は残ります）" : "", hasGround ? "指定した地面の線は自動推定に戻します（レーンごとに地面の高さが違うため）" : ""]
+        .filter(Boolean).join("、") + "。変えますか？")) return;
+    endPersonPick();
+    toast("選んだ人を追い直しています…");
+    try {
+      const snap = await api("POST", "/api/videos/" + current.video.id + "/target", { frame_id: v.frameId, person: who.index });
+      peopleGen += 1;
+      peopleCache.clear();
+      await afterCorrection(snap);
+      const notes = snap.target_change_notes || [];
+      toast("選んだ人で計算し直しました" + (notes.length ? "（" + notes.join("、") + "）" : ""));
+    } catch (err) { toast("選び直せませんでした: " + err.message, true); }
+  }
+
+  function onStageClick(ev) {
+    if (personMode && model) { choosePerson(ev); return; }
+    if (!pick || !model) return;
+    pick.push(stagePoint(ev));
     if (pick.length === 1) {
       $("pick-hint").textContent = "同じ地面の上を、右寄りでもう1回クリックしてください";
       render();
@@ -992,6 +1092,32 @@
     if (!hasSkeleton(v)) {
       ctx.fillStyle = "rgba(255,255,255,.75)"; ctx.font = Math.round(w / 52) + "px system-ui, sans-serif";
       ctx.fillText("このコマでは、追っている人が見えていません", w * 0.02, h - h * 0.04);
+    }
+    if (personMode) {
+      const data = peopleFor(v.frameId);
+      if (data) {
+        ctx.font = "600 " + Math.round(w / 55) + "px system-ui, sans-serif";
+        data.people.forEach((q, i) => {
+          const [x0, y0, x1, y1] = q.box;
+          const mine = q.index === data.tracked;
+          ctx.strokeStyle = mine ? cssVar("--ground") : "rgba(255,255,255,.9)";
+          ctx.lineWidth = mine ? lw * 2 : lw;
+          ctx.setLineDash(mine ? [] : [lw * 3, lw * 2]);
+          const px = (x1 - x0) * 0.12 + 4, py = (y1 - y0) * 0.06 + 4;
+          ctx.strokeRect(x0 - px, y0 - py, x1 - x0 + 2 * px, y1 - y0 + 2 * py);
+          ctx.setLineDash([]);
+          const label = mine ? "いま解析中" : String(i + 1);
+          const tw = ctx.measureText(label).width + w / 100;
+          ctx.fillStyle = mine ? cssVar("--ground") : "rgba(0,0,0,.7)";
+          ctx.fillRect(x0 - px, y0 - py - w / 40, tw, w / 40);
+          ctx.fillStyle = mine ? "#000" : "#fff";
+          ctx.fillText(label, x0 - px + w / 200, y0 - py - w / 160);
+        });
+        if (!data.people.length) {
+          ctx.fillStyle = "rgba(255,255,255,.85)";
+          ctx.fillText("このコマでは人を見つけられませんでした。コマを送ってください", w * 0.02, h * 0.12);
+        }
+      }
     }
     if (pick && pick.length) {
       ctx.fillStyle = cssVar("--ground");

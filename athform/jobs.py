@@ -20,7 +20,10 @@ from .cli import probe_video
 from .events import Correction, CorrectionError, DetectorConfig
 from .metrics import CaptureConditions
 from .pose import Keypoint, ModelInfo, PoseFrame
-from .realpose import Cancelled, PoseRunError, StoredPoseAdapter, estimate_ground
+import os
+
+from .realpose import (Cancelled, PoseRunError, StoredPoseAdapter, _person_stats, estimate_ground, people_summary,
+                       resolve_seed, track_people)
 from .store import NotFound, Store
 from .timebase import TimebaseError, build_frame_index
 
@@ -156,8 +159,20 @@ class JobRunner:
 
                 res = self.pose_fn(self.ffmpeg, self.store.original_path(video), index, self.store.frames_dir(vid),
                                    job["mode"], progress, lambda: self._cancelled(jid))
-                self.store.write_json(vid, "pose.json", pose_to_json(res.model, res.frames, res.image_size,
-                                                                      res.view_scale, res.failed))
+                frames, failed = res.frames, res.failed
+                people = getattr(res, "people", None) or {}
+                if people:
+                    self.store.write_json(vid, "people.json", {str(k): v for k, v in people.items()})
+                    target = self.store.read_json(vid, "target.json")
+                    if target and not target.get("lost"):
+                        # 利用者が選んだ人がいれば、推論をやり直した後もその人を追う（位置と大きさで探し直す）
+                        try:
+                            frames, failed = self._track(index, people, target, res.model)
+                        except PoseRunError as exc:
+                            self.store.write_json(vid, "target.json", {"lost": True, "reason": str(exc),
+                                                                       "previous": target})
+                self.store.write_json(vid, "pose.json", pose_to_json(res.model, frames, res.image_size,
+                                                                      res.view_scale, failed))
             self._set(jid, "analyzing", 0.96, "指標を計算中")
             self.analyze_video(vid, mode=job["mode"])
             self.store.update_job(jid, state="completed", progress=1.0, message="完了", error=None)
@@ -170,6 +185,123 @@ class JobRunner:
         finally:
             with self._lock:
                 self._cancel.discard(jid)
+
+    @staticmethod
+    def _track(index, people: dict[int, list], target: dict[str, Any], model: ModelInfo):
+        min_conf = float(model.config.get("min_confidence", 0.3))
+        order = [(f.source_frame_id, float(f.timestamp)) for f in index.frames]
+        idx = resolve_seed(people, target, min_conf)
+        return track_people(people, order, min_conf, seed=(int(target["frame_id"]), idx))
+
+    def _people(self, vid: str) -> dict[int, list] | None:
+        """people.json は大きくなりうるので、更新されるまで読み込んだものを使い回す（再レビュー N4）。"""
+        path = os.path.join(self.store.video_dir(vid), "people.json")
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return None
+        cache = getattr(self, "_people_cache", None)
+        if cache is None:
+            cache = self._people_cache = {}
+        hit = cache.get(vid)
+        if hit and hit[0] == mtime:
+            return hit[1]
+        raw = self.store.read_json(vid, "people.json")
+        data = None if raw is None else {int(k): v for k, v in raw.items()}
+        cache.clear()   # 1本分だけ持つ
+        cache[vid] = (mtime, data)
+        return data
+
+    def people_in_frame(self, vid: str, frame_id: int) -> dict[str, Any]:
+        """1コマに写っている全員（画面で解析する人を選ぶため）。"""
+        people = self._people(vid)
+        if people is None:
+            raise AnalysisError("この動画は、写っている人の候補を保存していない。「姿勢推定からやり直す」を実行すると選べる")
+        pose = self.store.read_json(vid, "pose.json") or {}
+        min_conf = float((pose.get("model") or {}).get("config", {}).get("min_confidence", 0.3))
+        target = self.store.read_json(vid, "target.json")
+        current = None
+        for f in pose.get("frames", []):
+            if f["source_frame_id"] == frame_id:
+                current = f
+                break
+        listed = people_summary(people.get(frame_id, []), min_conf)
+        # 今追っている人が、このコマの何番目か（点が一致する人）
+        chosen = None
+        if current and any(v for v in current["keypoints"].values()):
+            ref = current["keypoints"]
+            best = None
+            for p in listed:
+                pairs = [(ref[k], v) for k, v in p["keypoints"].items() if ref.get(k) is not None]
+                if not pairs:
+                    continue
+                err = sum(abs(a[0] - b[0]) + abs(a[1] - b[1]) for a, b in pairs) / len(pairs)
+                if err < 1.0 and (best is None or err < best[0]):
+                    best = (err, p["index"])
+            chosen = best[1] if best else None
+        return {"frame_id": frame_id, "people": listed, "tracked": chosen, "target": target}
+
+    def set_target(self, vid: str, frame_id: int, person: int) -> dict[str, Any]:
+        """解析する人を選び直す。保存した全員の点から追い直し、新しい版として計算する（推論はしない）。"""
+        people = self._people(vid)
+        pose = self.store.read_json(vid, "pose.json")
+        probe = self.store.read_json(vid, "probe.json")
+        if people is None or pose is None or probe is None:
+            raise AnalysisError("この動画は、写っている人の候補を保存していない。「姿勢推定からやり直す」を実行すると選べる")
+        if frame_id not in people or not 0 <= person < len(people[frame_id]):
+            raise AnalysisError("そのコマに、選んだ人はいない")
+        video = self.store.get_video(vid)
+        index = build_frame_index(probe, declared_capture_fps=video["declared_capture_fps"] or None,
+                                  declared_slowmo=bool(video["declared_slowmo"]))
+        model, _ = pose_from_json(pose)
+        min_conf = float(model.config.get("min_confidence", 0.3))
+        st = _person_stats(people[frame_id][person]["k"], people[frame_id][person]["s"], min_conf)
+        if st is None:
+            raise AnalysisError("選んだ人の点が少なすぎて追えない。はっきり写っているコマで選ぶ")   # 再レビュー B4
+        # 番号だけでなく、位置と大きさも残す（推論をやり直して順番が変わっても同じ人を探せる）
+        target = {"frame_id": frame_id, "person": person, "center": [round(st[0][0], 1), round(st[0][1], 1)],
+                  "size": round(st[1], 1)}
+        try:
+            frames, failed = self._track(index, people, target, model)
+        except PoseRunError as exc:
+            raise AnalysisError(str(exc)) from exc
+        # 元に戻せるように控える（版の保存に失敗したら戻す: 再レビュー N3）
+        before = {name: self.store.read_json(vid, name) for name in ("pose.json", "target.json", "corrections.json")}
+        before_ground = video["ground_override"]
+        notes = []
+        try:
+            self.store.write_json(vid, "pose.json", pose_to_json(model, frames, pose.get("image_size") or (0, 0),
+                                                                  pose.get("view_scale", 1.0), failed))
+            self.store.write_json(vid, "target.json", target)
+            # 前の人のために指定した地面の線と修正は、別の人には当てはまらない（レーンで地面の高さが違う: N1・N2）
+            if before_ground:
+                self.store.update_video(vid, {"ground_override": None})
+                notes.append("前の人のために指定した地面の線をやめて、自動推定に戻した")
+            corrs = before["corrections.json"] or []
+            active = [i for i, c in enumerate(corrs) if not c.get("revoked_at")]
+            if active:
+                from .store import now  # noqa: PLC0415
+                updated = [dict(c) for c in corrs]
+                for i in active:
+                    updated[i]["revoked_at"] = now()
+                    updated[i]["revoked_reason"] = "解析する人を変えたため（前の人への修正）"
+                self.store.write_json(vid, "corrections.json", updated)
+                notes.append(f"前の人への接地・離地の修正 {len(active)} 件を取り消した（記録は残る）")
+            snap = self.analyze_video(vid, mode=str(model.config.get("mode", "performance")))
+        except Exception:
+            for name, obj in before.items():
+                if obj is not None:
+                    self.store.write_json(vid, name, obj)
+                elif name == "target.json":
+                    try:
+                        os.remove(os.path.join(self.store.video_dir(vid), name))
+                    except OSError:
+                        pass
+            if before_ground:
+                self.store.update_video(vid, {"ground_override": before_ground})
+            raise
+        snap["target_change_notes"] = notes
+        return snap
 
     def analyze_video(self, vid: str, mode: str = "performance", require_last_correction: bool = False) -> dict[str, Any]:
         """保存済みの probe と姿勢推定から解析し、新しい版として保存する。
@@ -231,5 +363,7 @@ class JobRunner:
         snap["video"] = {"id": vid, "filename": video["filename"], "practice_date": video["practice_date"],
                          "discipline_name": disciplines.get(video["discipline"]).name}
         snap["analysis_mode"] = mode
+        snap["target"] = self.store.read_json(vid, "target.json") or {"auto": "最初のコマで最も大きく写った人"}
+        snap["people_available"] = os.path.isfile(os.path.join(self.store.video_dir(vid), "people.json"))
         self.store.save_analysis(vid, snap, mode)
         return snap

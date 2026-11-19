@@ -278,6 +278,23 @@ class Handler(BaseHTTPRequestHandler):
                 if snap is None:
                     raise ApiError(404, "解析結果がまだない")
                 return self._json(200, snap)
+            if rest == ["people"] and method == "GET":
+                try:
+                    fid = int(q.get("frame", ""))
+                except ValueError:
+                    raise ApiError(400, "frame は原本フレームID") from None
+                return self._json(200, app.jobs.people_in_frame(vid, fid))
+            if rest == ["target"] and method == "POST":
+                self._check_write(need_json=True)
+                body = self._read_json()
+                fid, person = body.get("frame_id"), body.get("person")
+                if not all(isinstance(v, int) and not isinstance(v, bool) for v in (fid, person)):
+                    raise ApiError(400, "frame_id と person は整数")
+                with app.video_lock(vid):
+                    if self._job_running(vid):
+                        raise Busy("解析の実行中は人を選び直せない。終わってから選ぶ")
+                    snap = app.jobs.set_target(vid, fid, person)
+                return self._json(200, snap)
             if rest == ["corrections"] and method == "POST":
                 self._check_write(need_json=True)
                 return self._add_correction(vid, self._read_json())

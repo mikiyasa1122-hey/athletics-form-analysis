@@ -17,3 +17,16 @@ __pycache__/
 .cache/
 .venv/
 data/
+
+# 動画・画像（個人情報・位置情報を含みうる。リポジトリに入れない）
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4v
+*.avi
+*.mkv
+*.webm
+*.ogv
+*.heic
+*.HEIC
