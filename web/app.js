@@ -1,11 +1,11 @@
-/* フォーム解析アプリの画面。計算は player-core.js とサーバーに置き、ここは表示と操作だけにする。
+/* フォームノートの画面。計算は player-core.js とサーバーに置き、ここは表示と操作だけにする。
  * 解析データやファイル名など外から来た文字列は textContent でのみ挿入する（HTMLとして解釈させない）。 */
 (function () {
   "use strict";
   const PC = window.PlayerCore;
   const $ = (id) => document.getElementById(id);
 
-  // ---------- 共通 ----------
+  // ================= 共通 =================
   function node(tag, text, cls) {
     const n = document.createElement(tag);
     if (text !== undefined && text !== null) n.textContent = String(text);
@@ -13,12 +13,20 @@
     return n;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
-  function banner(msg) { const b = $("banner"); b.textContent = msg || ""; b.hidden = !msg; }
   function button(label, onClick, cls) {
     const b = node("button", label, cls);
     b.type = "button";
     b.addEventListener("click", onClick);
     return b;
+  }
+  let toastTimer = null;
+  function toast(msg, isError) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.toggle("error", !!isError);
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 7000 : 3500);
   }
 
   async function api(method, path, body) {
@@ -33,27 +41,42 @@
     return data;
   }
 
+  /** ラジオ風のセグメント（[data-value] のボタン群）。 */
+  function segValue(id) {
+    const b = $(id).querySelector('[aria-checked="true"]');
+    return b ? b.dataset.value : null;
+  }
+  function setSeg(id, value) {
+    for (const b of $(id).querySelectorAll("button")) b.setAttribute("aria-checked", String(b.dataset.value === value));
+  }
+  function wireSeg(id, onChange) {
+    $(id).addEventListener("click", (ev) => {
+      const b = ev.target.closest("button");
+      if (!b || !b.dataset.value) return;
+      setSeg(id, b.dataset.value);
+      if (onChange) onChange(b.dataset.value);
+    });
+  }
+
   let catalog = null;
   async function loadCatalog() {
     if (!catalog) catalog = await api("GET", "/api/disciplines");
     return catalog;
   }
-  function disciplineName(id) {
-    const d = catalog && catalog.disciplines.find((x) => x.discipline_id === id);
-    return d ? d.name : id;
-  }
+  function discipline(id) { return catalog && catalog.disciplines.find((x) => x.discipline_id === id); }
+  function disciplineName(id) { const d = discipline(id); return d ? d.name : id; }
+  const CATEGORY = {
+    sprint: "短距離", middle_distance: "中距離", long_distance: "長距離", hurdles: "ハードル", steeplechase: "障害",
+    horizontal_jump: "跳躍（幅）", vertical_jump: "跳躍（高さ）", throw: "投擲", race_walk: "競歩", relay: "リレー",
+  };
   function fillDisciplines(select, withAll) {
     clear(select);
-    if (withAll) { const o = node("option", "すべて"); o.value = ""; select.appendChild(o); }
+    if (withAll) { const o = node("option", "すべての種目"); o.value = ""; select.appendChild(o); }
     const groups = {};
-    const catLabel = {
-      sprint: "短距離", middle_distance: "中距離", long_distance: "長距離", hurdles: "ハードル", steeplechase: "障害",
-      horizontal_jump: "跳躍（幅）", vertical_jump: "跳躍（高さ）", throw: "投擲", race_walk: "競歩", relay: "リレー",
-    };
     for (const d of catalog.disciplines) {
       if (!groups[d.category]) {
         groups[d.category] = document.createElement("optgroup");
-        groups[d.category].label = catLabel[d.category] || d.category;
+        groups[d.category].label = CATEGORY[d.category] || d.category;
         select.appendChild(groups[d.category]);
       }
       const o = node("option", d.name);
@@ -61,58 +84,129 @@
       groups[d.category].appendChild(o);
     }
   }
+  /** 種目ごとに、何が分かるかを一文で。 */
   function disciplineNote(id) {
-    const d = catalog.disciplines.find((x) => x.discipline_id === id);
+    const d = discipline(id);
     if (!d) return "";
-    const st = catalog.status_labels;
-    const parts = Object.keys(d.metric_status).map((m) => metricName(m) + ": " + (st[d.metric_status[m]] || d.metric_status[m]));
-    const notes = d.notes.length ? " / " + d.notes.join(" / ") : "";
-    return "この種目の指標 — " + parts.join("、") + notes;
+    const st = d.metric_status;
+    const runs = st.contact_time === "supported" ? "接地時間・ピッチ・膝と体幹の角度を測ります。"
+      : st.contact_time === "experimental" ? "接地時間・ピッチ・角度を測ります（この種目では試験的）。"
+      : "接地時の角度だけを参考として出します（走りの指標は対象外）。";
+    return runs;
   }
-  const METRIC_NAMES = {
-    contact_time: "接地時間", cadence: "ピッチ",
-    knee_angle_at_contact: "接地時の膝角度（2D）", trunk_lean_at_contact: "接地時の体幹前傾（2D）",
-  };
-  function metricName(id) { return METRIC_NAMES[id] || id; }
-  const JOB_LABEL = {
-    queued: "待機中", probing: "時刻の読み取り", inferring: "姿勢推定", analyzing: "計算",
-    completed: "完了", failed: "失敗", cancel_requested: "取り消し中", cancelled: "取り消し",
-  };
 
-  // ---------- ルーティング ----------
+  const METRICS = [
+    ["contact_time", "接地時間", "s"],
+    ["cadence", "ピッチ", "歩/秒"],
+    ["knee_angle_at_contact", "接地時の膝の角度", "°"],
+    ["trunk_lean_at_contact", "接地時の前傾", "°"],
+  ];
+  // 状態は利用者の言葉で
+  const STATE = { valid: "確定", estimated: "推定", review_required: "要確認", unavailable: "出せない" };
+  const RANK = { valid: 0, estimated: 1, review_required: 2, unavailable: 3 };
+
+  function fmtDate(s) {
+    if (!s) return "";
+    const d = new Date(s.length <= 10 ? s + "T00:00:00" : s);
+    if (isNaN(d)) return s;
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+  }
+  function fmtClock(t) {
+    if (typeof t !== "number" || !isFinite(t)) return "—";
+    const m = Math.floor(t / 60), s = t - m * 60;
+    return (m ? m + ":" + (s < 10 ? "0" : "") : "") + s.toFixed(3) + (m ? "" : " s");
+  }
+
+  // ================= ルーティング =================
   let pollTimer = null;
   function stopPolling() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
 
   async function route() {
     stopPolling();
     stopPlayback();
-    banner("");
+    endPick();
     const h = location.hash || "#/";
     for (const v of ["view-home", "view-video", "view-compare"]) $(v).hidden = true;
+    $("nav-home").removeAttribute("aria-current");
+    $("nav-compare").removeAttribute("aria-current");
     try {
       await loadCatalog();
       const m = /^#\/video\/([a-z0-9]{12})$/.exec(h);
       if (m) { $("view-video").hidden = false; await openVideo(m[1]); }
-      else if (h === "#/compare") { $("view-compare").hidden = false; await openCompare(); }
-      else { $("view-home").hidden = false; await openHome(); }
+      else if (h === "#/compare") { $("view-compare").hidden = false; $("nav-compare").setAttribute("aria-current", "page"); await openCompare(); }
+      else { $("view-home").hidden = false; $("nav-home").setAttribute("aria-current", "page"); await openHome(); }
     } catch (err) {
-      banner("読み込めませんでした: " + err.message);
+      toast("読み込めませんでした: " + err.message, true);
     }
+    window.scrollTo(0, 0);
   }
 
-  // ---------- 一覧・アップロード ----------
+  // ================= 練習（一覧・追加） =================
   let homeReady = false;
-  async function openHome() {
-    if (!homeReady) {
-      fillDisciplines($("up-discipline"), false);
-      fillDisciplines($("f-discipline"), true);
-      $("up-discipline").addEventListener("change", () => { $("up-discipline-note").textContent = disciplineNote($("up-discipline").value); });
-      $("up-discipline-note").textContent = disciplineNote($("up-discipline").value);
-      $("up-date").value = new Date().toISOString().slice(0, 10);
-      $("upload-form").addEventListener("submit", (e) => { e.preventDefault(); upload(); });
-      $("filter-form").addEventListener("submit", (e) => { e.preventDefault(); refreshList(); });
-      homeReady = true;
+  let pickedFile = null;
+
+  function setupHome() {
+    if (homeReady) return;
+    homeReady = true;
+    fillDisciplines($("up-discipline"), false);
+    fillDisciplines($("f-discipline"), true);
+    wireSeg("up-direction");
+    wireSeg("up-view");
+    const showNote = () => { $("up-discipline-note").textContent = disciplineNote($("up-discipline").value); };
+    $("up-discipline").addEventListener("change", showNote);
+    showNote();
+
+    const drop = $("drop");
+    $("drop-empty").addEventListener("click", () => $("up-file").click());
+    drop.addEventListener("keydown", (ev) => {
+      if ((ev.key === "Enter" || ev.key === " ") && !pickedFile && ev.target === drop) { ev.preventDefault(); $("up-file").click(); }
+    });
+    $("up-file").addEventListener("change", () => { if ($("up-file").files[0]) pickFile($("up-file").files[0]); });
+    $("up-change").addEventListener("click", () => $("up-file").click());
+    for (const type of ["dragenter", "dragover"]) {
+      drop.addEventListener(type, (ev) => { ev.preventDefault(); drop.classList.add("dragging"); });
     }
+    for (const type of ["dragleave", "drop"]) {
+      drop.addEventListener(type, (ev) => { ev.preventDefault(); drop.classList.remove("dragging"); });
+    }
+    drop.addEventListener("drop", (ev) => {
+      const f = ev.dataTransfer && ev.dataTransfer.files[0];
+      if (f) pickFile(f);
+    });
+    $("upload-form").addEventListener("submit", (e) => { e.preventDefault(); upload(); });
+
+    let t = null;
+    const refilter = () => { clearTimeout(t); t = setTimeout(refreshList, 250); };
+    $("filter-form").addEventListener("submit", (e) => { e.preventDefault(); refreshList(); });
+    for (const id of ["f-q", "f-tag"]) $(id).addEventListener("input", refilter);
+    for (const id of ["f-discipline", "f-from", "f-to"]) $(id).addEventListener("change", refreshList);
+  }
+
+  function pickFile(f) {
+    pickedFile = f;
+    $("drop-empty").hidden = true;
+    $("upload-form").hidden = false;
+    $("up-name").textContent = f.name + "（" + (f.size / 1048576).toFixed(1) + " MB）";
+    if (!$("up-date").value) {
+      const d = f.lastModified ? new Date(f.lastModified) : new Date();
+      $("up-date").value = d.toISOString().slice(0, 10);
+    }
+    $("up-discipline").focus();
+  }
+
+  function resetUpload() {
+    pickedFile = null;
+    $("upload-form").reset();
+    setSeg("up-direction", "left_to_right");
+    setSeg("up-view", "side");
+    $("upload-form").hidden = true;
+    $("drop-empty").hidden = false;
+    $("up-progress-wrap").hidden = true;
+    $("up-file").value = "";
+  }
+
+  async function openHome() {
+    setupHome();
     await refreshList();
   }
 
@@ -124,149 +218,201 @@
     if ($("f-to").value) p.set("to", $("f-to").value);
     if ($("f-tag").value) p.set("tag", $("f-tag").value);
     const data = await api("GET", "/api/videos?" + p.toString());
-    const body = $("video-list");
-    clear(body);
+    const list = $("video-list");
+    clear(list);
     $("list-empty").hidden = data.videos.length > 0;
+    let anyRunning = false;
     for (const v of data.videos) {
-      const tr = document.createElement("tr");
-      tr.appendChild(node("td", v.practice_date || v.created_at.slice(0, 10)));
-      tr.appendChild(node("td", disciplineName(v.discipline)));
-      tr.appendChild(node("td", v.filename));
-      tr.appendChild(node("td", v.tags || ""));
-      tr.appendChild(node("td", v.latest_analysis ? "あり" : "なし", "status status-" + (v.latest_analysis ? "completed" : "none")));
-      const td = document.createElement("td");
-      const a = node("a", "開く", "button");
+      const a = node("a", null, "card");
       a.href = "#/video/" + v.id;
-      td.appendChild(a);
-      tr.appendChild(td);
-      body.appendChild(tr);
+      const th = node("div", null, "thumb");
+      const img = new Image();
+      img.alt = "";
+      img.loading = "lazy";
+      img.onerror = () => img.remove();
+      img.src = "/api/videos/" + v.id + "/frames/0.jpg";
+      th.appendChild(img);
+      const job = v.job;
+      const running = job && ["queued", "probing", "inferring", "analyzing", "cancel_requested"].includes(job.state);
+      if (running) {
+        anyRunning = true;
+        th.appendChild(node("span", "解析中 " + Math.round((job.progress || 0) * 100) + "%", "pill run"));
+      } else if (job && job.state === "failed" && !v.latest_analysis) {
+        th.appendChild(node("span", "解析できませんでした", "pill fail"));
+      } else if (!v.latest_analysis) {
+        th.appendChild(node("span", "未解析", "pill"));
+      }
+      a.appendChild(th);
+      const body = node("div", null, "card-body");
+      body.appendChild(node("span", fmtDate(v.practice_date || v.created_at.slice(0, 10)), "card-date"));
+      body.appendChild(node("span", disciplineName(v.discipline) + (v.record ? "　" + v.record : ""), "card-title"));
+      body.appendChild(node("span", v.notes || v.tags || v.filename, "card-meta"));
+      a.appendChild(body);
+      list.appendChild(a);
     }
+    stopPolling();
+    if (anyRunning && !$("view-home").hidden) pollTimer = setTimeout(refreshList, 3000);
   }
 
   function upload() {
-    const f = $("up-file").files[0];
+    const f = pickedFile;
     if (!f) return;
     const meta = {
-      discipline: $("up-discipline").value, camera_view: $("up-view").value, direction: $("up-direction").value,
+      discipline: $("up-discipline").value, camera_view: segValue("up-view"), direction: segValue("up-direction"),
       practice_date: $("up-date").value || null, place: $("up-place").value, record: $("up-record").value,
       tags: $("up-tags").value, notes: $("up-notes").value, declared_capture_fps: $("up-fps").value.trim(),
       declared_slowmo: $("up-slowmo").checked,
     };
-    // 進み具合を出すため XMLHttpRequest で送る（fetch では送信の進み具合が取れない）
+    // 送信の進み具合を出すため XMLHttpRequest で送る（fetch では取れない）
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/videos");
     xhr.setRequestHeader("X-Athform-Upload", "1");
     xhr.setRequestHeader("X-Filename", encodeURIComponent(f.name));
     xhr.setRequestHeader("X-Athform-Meta", encodeURIComponent(JSON.stringify(meta)));
     $("up-submit").disabled = true;
-    $("up-progress").hidden = false;
-    $("up-status").textContent = "送信中…";
-    xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("up-progress").value = e.loaded / e.total; };
-    xhr.onerror = () => { $("up-submit").disabled = false; $("up-status").textContent = "送信できませんでした"; };
+    $("up-progress-wrap").hidden = false;
+    $("up-status").textContent = "動画を取り込んでいます…";
+    $("up-progress").style.width = "0%";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) $("up-progress").style.width = Math.round(e.loaded / e.total * 100) + "%";
+    };
+    xhr.onerror = () => { $("up-submit").disabled = false; $("up-status").textContent = "送れませんでした。もう一度試してください"; };
     xhr.onload = async () => {
       $("up-submit").disabled = false;
-      $("up-progress").hidden = true;
       let data = {};
       try { data = JSON.parse(xhr.responseText); } catch (e) { data = {}; }
-      if (xhr.status !== 201) { $("up-status").textContent = "追加できませんでした: " + (data.error || xhr.status); return; }
-      $("up-status").textContent = "";
-      $("upload-form").reset();
-      $("up-date").value = new Date().toISOString().slice(0, 10);
+      if (xhr.status !== 201) { $("up-status").textContent = "取り込めませんでした: " + (data.error || xhr.status); return; }
       try { await api("POST", "/api/videos/" + data.video.id + "/jobs", { kind: "full", mode: "performance" }); }
-      catch (err) { banner("解析を開始できませんでした: " + err.message); }
+      catch (err) { toast("解析を始められませんでした: " + err.message, true); }
+      resetUpload();
       location.hash = "#/video/" + data.video.id;
     };
     xhr.send(f);
   }
 
-  // ---------- 解析画面 ----------
+  // ================= 解析画面 =================
   let current = null;      // { video, job, analyses, corrections }
   let model = null;
   let state = PC.createState();
   let timer = null;
   let selectedEvent = null;
-  let picking = false;
+  let viewingLatest = true;
+  let editing = false;
   const images = new Map();
   let videoReady = false;
+  let times = [];          // 位置 → 元動画時刻（タイムライン用）
 
   function setupVideoView() {
     if (videoReady) return;
     videoReady = true;
     fillDisciplines($("m-discipline"), false);
-    for (const r of PC.RATES) { const o = node("option", "×" + r); o.value = String(r); $("rate-select").appendChild(o); }
-    $("rate-select").addEventListener("change", () => { state = PC.setRate(state, Number($("rate-select").value)); render(); });
+    wireSeg("m-direction");
+    wireSeg("m-view");
+    const rateLabel = { 1: "×1", 0.5: "½", 0.25: "¼", 0.1: "⅒" };
+    for (const r of PC.RATES) {
+      const b = node("button", rateLabel[r] || ("×" + r));
+      b.type = "button";
+      b.dataset.value = String(r);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(r === 1));
+      b.title = r === 1 ? "そのままの速さ" : r + " 倍の速さ";
+      $("rate-seg").appendChild(b);
+    }
+    wireSeg("rate-seg", (v) => { state = PC.setRate(state, Number(v)); render(); });
     $("btn-play").addEventListener("click", togglePlay);
     $("btn-prev").addEventListener("click", () => stepBy(-1));
     $("btn-next").addEventListener("click", () => stepBy(1));
     $("btn-unloop").addEventListener("click", () => { state = PC.clearLoop(state); render(); });
-    $("show-skeleton").addEventListener("change", render);
-    $("show-ground").addEventListener("change", render);
-    $("scrubber").addEventListener("input", () => {
-      if (!model) return;
-      stopPlayback();
-      state = PC.step(model, PC.clearLoop(state), Number($("scrubber").value) - state.position);
-      render();
-    });
+    for (const id of ["show-skeleton", "show-ground"]) {
+      $(id).addEventListener("click", () => { $(id).setAttribute("aria-pressed", String($(id).getAttribute("aria-pressed") !== "true")); render(); });
+    }
     document.addEventListener("keydown", (ev) => {
       if ($("view-video").hidden || !model) return;
       const t = ev.target;
-      if (t instanceof HTMLInputElement && t.type !== "range" && t.type !== "checkbox") return;
-      if (t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;
-      if (ev.key === "ArrowRight") { ev.preventDefault(); stepBy(1); }
-      else if (ev.key === "ArrowLeft") { ev.preventDefault(); stepBy(-1); }
+      if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;
+      if (ev.key === "ArrowRight") { ev.preventDefault(); stepBy(ev.shiftKey ? 10 : 1); }
+      else if (ev.key === "ArrowLeft") { ev.preventDefault(); stepBy(ev.shiftKey ? -10 : -1); }
       else if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
+      else if (ev.key === "Escape") endPick();
     });
+
+    // タイムライン: クリック・ドラッグで移動、印をクリックで選ぶ
+    const tl = $("timeline");
+    let dragging = false;
+    const seekAt = (ev, select) => {
+      if (!model) return;
+      const rect = tl.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      if (select) {
+        const hit = eventAt(x, ev.clientY - rect.top, rect.width);
+        if (hit) { selectEvent(hit.event_id, true); return; }
+      }
+      const t = xToTime(x, rect.width);
+      seekPosition(nearestPosition(t));
+    };
+    tl.addEventListener("pointerdown", (ev) => { dragging = true; tl.setPointerCapture(ev.pointerId); seekAt(ev, true); });
+    tl.addEventListener("pointermove", (ev) => { if (dragging) seekAt(ev, false); });
+    tl.addEventListener("pointerup", () => { dragging = false; });
+    window.addEventListener("resize", () => { if (model) renderTimeline(); });
+
     $("run-performance").addEventListener("click", () => startJob("full", "performance"));
     $("run-balanced").addEventListener("click", () => startJob("full", "balanced"));
     $("rerun").addEventListener("click", () => {
-      if (confirm("姿勢推定からやり直します（時間がかかります）。手動訂正は残ります。")) startJob("full", "performance");
+      closeMenu();
+      if (confirm("姿勢推定からやり直します。数分〜十数分かかります。修正した内容は残ります。")) startJob("full", "performance");
     });
     $("job-cancel").addEventListener("click", async () => {
       if (current && current.job) { await api("POST", "/api/jobs/" + current.job.id + "/cancel", {}); pollJob(); }
     });
     $("meta-form").addEventListener("submit", (e) => { e.preventDefault(); saveMeta(); });
-    $("delete-video").addEventListener("click", deleteVideo);
-    $("c-add").addEventListener("click", () => {
-      correct({ action: "add", event_type: $("c-type").value, side: $("c-side").value,
-                after_frame_id: PC.view(model, state).frameId });
+    $("delete-video").addEventListener("click", () => { closeMenu(); deleteVideo(); });
+
+    // 修正
+    $("edit-toggle").addEventListener("click", () => {
+      editing = !editing;
+      $("edit-toggle").setAttribute("aria-pressed", String(editing));
+      $("edit-toggle").textContent = editing ? "修正を終える" : "修正する";
+      $("edit-panel").hidden = !editing;
+      renderInspector();
+      renderTimeline();
     });
-    $("ground-pick").addEventListener("click", () => {
-      picking = !picking;
-      $("ground-pick").setAttribute("aria-pressed", String(picking));
-      $("stage").classList.toggle("picking", picking);
-    });
-    $("ground-reset").addEventListener("click", () => saveGround(null));
-    $("stage").addEventListener("click", (ev) => {
-      if (!picking || !model) return;
-      const rect = $("stage").getBoundingClientRect();
-      const size = PC.imageSize(model);
-      const x = (ev.clientX - rect.left) / rect.width * size.width;
-      const y = (ev.clientY - rect.top) / rect.height * size.height;
-      picking = false;
-      $("ground-pick").setAttribute("aria-pressed", "false");
-      $("stage").classList.remove("picking");
-      const band = (model.snapshot.detector && model.snapshot.detector.contact_band_px) || 6;
-      saveGround({ ground_y: y, ground_x0: x, ground_slope: 0, contact_band_px: band });
-    });
+    for (const r of ["映像で確認した", "隠れていて誤検出", "地面の線のずれ", "別の人を検出"]) {
+      $("reason-chips").appendChild(button(r, () => { $("c-reason").value = r; $("c-reason").focus(); }));
+    }
+    const add = (type, side) => () => correct({ action: "add", event_type: type, side: side, after_frame_id: PC.view(model, state).frameId });
+    $("c-add-contact-left").addEventListener("click", add("foot_contact", "left"));
+    $("c-add-contact-right").addEventListener("click", add("foot_contact", "right"));
+    $("c-add-off-left").addEventListener("click", add("toe_off", "left"));
+    $("c-add-off-right").addEventListener("click", add("toe_off", "right"));
+
+    // 地面の指定（2点）
+    $("stage").addEventListener("click", onStageClick);
   }
+
+  function closeMenu() { for (const d of document.querySelectorAll("details.menu")) d.open = false; }
 
   async function openVideo(id) {
     setupVideoView();
     current = await api("GET", "/api/videos/" + id);
     const v = current.video;
-    $("v-title").textContent = disciplineName(v.discipline) + " — " + v.filename + (v.practice_date ? "（" + v.practice_date + "）" : "");
-    $("version-note").hidden = true;
+    $("v-title").textContent = disciplineName(v.discipline) + (v.record ? "　" + v.record : "");
+    $("v-sub").textContent = [fmtDate(v.practice_date), v.place, v.filename].filter(Boolean).join(" ・ ");
     $("export-link").href = "/api/videos/" + id + "/export";
     fillMeta(v);
     renderHistory();
+    editing = false;
+    $("edit-toggle").setAttribute("aria-pressed", "false");
+    $("edit-toggle").textContent = "修正する";
+    $("edit-panel").hidden = true;
+    $("version-note").hidden = true;
     await loadAnalysis();
     showJob();
   }
 
   function fillMeta(v) {
     $("m-discipline").value = v.discipline;
-    $("m-view").value = v.camera_view || "side";
-    $("m-direction").value = v.direction || "left_to_right";
+    setSeg("m-view", v.camera_view || "side");
+    setSeg("m-direction", v.direction || "left_to_right");
     $("m-date").value = v.practice_date || "";
     $("m-place").value = v.place || "";
     $("m-record").value = v.record || "";
@@ -274,13 +420,8 @@
     $("m-fps").value = v.declared_capture_fps || "";
     $("m-slowmo").checked = !!v.declared_slowmo;
     $("m-notes").value = v.notes || "";
-    const g = v.ground_override ? JSON.parse(v.ground_override) : null;
-    $("ground-text").textContent = g
-      ? "手動で指定: 高さ " + g.ground_y.toFixed(0) + " px（接地とみなす幅 " + (g.contact_band_px || 6).toFixed(0) + " px）"
-      : "足の最下点から自動で推定しています。カメラが動く動画では外れることがあります。";
   }
 
-  let viewingLatest = true;
   async function loadAnalysis(revision) {
     let snap = null;
     try {
@@ -288,74 +429,35 @@
     } catch (err) { snap = null; }
     const latest = current.analyses.length ? current.analyses[0].revision : null;
     viewingLatest = !snap || !latest || snap.revision === latest;
-    $("no-analysis").hidden = !!snap;
     $("player").hidden = !snap;
-    if (!snap) { model = null; renderEmptyPanels(); return; }
+    if (!snap) { model = null; return; }
     model = PC.loadSnapshot(snap);
-    state = PC.setRate(PC.createState(), Number($("rate-select").value) || 1);
+    state = PC.setRate(PC.createState(), Number(segValue("rate-seg")) || 1);
     images.clear();
+    times = model.frames.map((f) => f.t);
     const size = PC.imageSize(model);
     $("stage").width = size.width;
     $("stage").height = size.height;
-    $("scrubber").max = String(model.frames.length - 1);
-    $("v-preview").hidden = !snap.preview;
-    $("v-preview").textContent = snap.preview ? "プレビュー（正式な計測ではない）" : "";
-    renderTitle();
-    renderQuality(); renderEvents(); renderMetrics(); renderCorrections(); render();
+    selectedEvent = null;
+    renderAll();
   }
 
-  function renderTitle() {
+  function renderAll() {
+    renderVersionNote();
+    renderTrust(); renderSummary(); renderEventsSummary(); renderInspector(); renderCorrections();
+    renderQuality(); render();
+  }
+
+  function renderVersionNote() {
     const s = model.snapshot, v = current.video;
-    const name = (s.discipline && s.discipline.name) || disciplineName(s.capture_conditions.discipline);
-    $("v-title").textContent = name + " — " + v.filename + (v.practice_date ? "（" + v.practice_date + "）" : "") +
-      "　版 " + (s.revision || "?");
     const notes = [];
-    if (!viewingLatest) notes.push("過去の版を表示しています。訂正は最新の版にだけできます。");
+    if (!viewingLatest) notes.push("前の解析（版 " + s.revision + "）を見ています。修正は最新の版にだけできます。");
     if (s.capture_conditions.discipline !== v.discipline || (s.capture_conditions.camera_view || "") !== (v.camera_view || "")) {
-      notes.push("動画の情報（種目・撮影角度）が、この版を解析したときと違います。最新の情報で計算し直すには「保存して再計算」を押してください。");
+      notes.push("動画の情報が、この解析をしたときから変わっています。「動画の情報を変える」から計算し直してください。");
     }
     $("version-note").textContent = notes.join(" ");
     $("version-note").hidden = !notes.length;
-    for (const id of ["c-add", "c-reason"]) $(id).disabled = !viewingLatest;
-  }
-
-  function renderCorrections() {
-    const ul = $("corrections-list");
-    clear(ul);
-    const unapplied = new Map(((model.snapshot.events || {}).unapplied_corrections || []).map((u) => [u.index, u.reason]));
-    // 最新の版では保存中の訂正（取り消しボタン付き）、過去の版ではその版を作ったときの訂正を表示する（再レビュー N5）
-    const list = viewingLatest ? (current.corrections || []) : ((model.snapshot.events || {}).corrections || []);
-    const label = { move: "移動", add: "追加", delete: "削除" };
-    list.forEach((c, i) => {
-      const li = node("li");
-      const what = (label[c.action] || c.action) + "　" + (c.event_id || ((c.side === "left" ? "左" : "右") + (c.event_type === "toe_off" ? "離地" : "接地"))) +
-        (c.after_frame_id !== null && c.after_frame_id !== undefined ? " → frame " + c.after_frame_id : "") + "　理由: " + c.reason;
-      let state = "適用";
-      if (c.revoked_at) state = "取り消し済み（" + (c.revoked_reason || "") + "）";
-      else if (unapplied.has(i)) state = "適用できなかった: " + unapplied.get(i);
-      li.appendChild(node("span", what + "　［" + state + "］"));
-      if (!c.revoked_at && viewingLatest) {
-        li.appendChild(document.createTextNode(" "));
-        li.appendChild(button("取り消す", () => revokeCorrection(i)));
-      }
-      ul.appendChild(li);
-    });
-    if (!list.length) ul.appendChild(node("li", "まだありません"));
-  }
-
-  async function revokeCorrection(i) {
-    const reason = $("c-reason").value.trim();
-    if (!reason) { $("c-status").textContent = "取り消しの理由を「訂正の理由」に入力してください"; $("c-reason").focus(); return; }
-    try {
-      const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections/" + i + "/revoke", { reason: reason });
-      await afterCorrection(snap);
-      $("c-status").textContent = "訂正を取り消し、計算し直しました";
-    } catch (err) { $("c-status").textContent = "取り消せませんでした: " + err.message; }
-  }
-
-  function renderEmptyPanels() {
-    for (const id of ["quality-list", "quality-notes", "events-body", "metrics-body", "unsupported-list"]) clear($(id));
-    $("feedback-text").textContent = "";
+    $("edit-toggle").disabled = !viewingLatest;
   }
 
   function renderHistory() {
@@ -363,64 +465,357 @@
     clear(ul);
     for (const a of current.analyses) {
       const li = node("li");
-      const b = button("版 " + a.revision + "（" + a.created_at.replace("T", " ").slice(0, 16) + "、" + a.mode + "）",
-                       () => loadAnalysis(a.revision));
-      li.appendChild(b);
+      const label = "版 " + a.revision + "　" + a.created_at.replace("T", " ").slice(0, 16) +
+        (a.mode === "balanced" ? "（軽く試した結果）" : a.mode === "legacy" ? "（旧形式）" : "");
+      li.appendChild(button(label, () => loadAnalysis(a.revision), "link"));
       ul.appendChild(li);
     }
-    if (!current.analyses.length) ul.appendChild(node("li", "まだありません"));
+    if (!current.analyses.length) ul.appendChild(node("li", "まだありません", "muted"));
+  }
+
+  // ---------- 確かさ（いちばん上に、やることと一緒に） ----------
+  function renderTrust() {
+    const box = $("trust");
+    clear(box);
+    const s = model.snapshot;
+    const gq = s.ground_quality || {};
+    const q = s.capture_quality || {};
+    const usable = model.metrics.filter((m) => m.status !== "unavailable");
+    const best = usable.length ? usable.reduce((a, m) => (RANK[m.status] < RANK[a] ? m.status : a), "unavailable") : "unavailable";
+    let level, title, text;
+    const reasons = [];
+    const actions = [];
+    if (["slowmo_suspected", "declared", "unknown"].includes(q.capture_time_status)) {
+      reasons.push("撮影したときの本当の時間が分からないため、秒で表す値（接地時間・ピッチ）は出していません。");
+    }
+    for (const p of gq.problems || []) reasons.push(p);
+    for (const p of gq.pose_problems || []) reasons.push(p);
+    if ((s.events.unapplied_corrections || []).length) reasons.push("当てられなかった修正があります（修正の記録を確かめてください）。");
+    if (s.preview) {
+      level = "estimated"; title = "軽く試した結果です";
+      text = "速いモデルで解析しました。きちんと測るには、精度を優先して解析し直してください。";
+      actions.push(button("精度を優先して解析する", () => startJob("full", "performance"), "primary"));
+    } else if (!usable.length) {
+      level = "unavailable"; title = "この動画では値を出せませんでした";
+      text = "下の理由を確かめてください。横から、カメラを固定して全身が映る動画だと測りやすくなります。";
+    } else if (best === "valid") {
+      level = "valid"; title = "確定した値です";
+      text = "地面の線を指定済みで、品質の確認も通っています。";
+    } else if (gq.method === "auto" && !(gq.problems || []).length && !reasons.length) {
+      level = "estimated"; title = "おおよその値です";
+      text = "地面の位置を自動で推定しています。映像で地面を2点クリックして決めると、値が確定します。";
+      actions.push(button("地面を指定する", startPick, "primary"));
+    } else {
+      level = "review_required"; title = "確かめが必要です";
+      text = "次の理由で、値はそのまま使えません。";
+      if (gq.method !== "user_override") actions.push(button("地面を指定する", startPick, "quiet"));
+    }
+    box.className = "trust lv-" + level;
+    const head = node("div", null, "trust-head");
+    head.appendChild(node("span", null, "dot"));
+    head.appendChild(node("span", title, "trust-level"));
+    box.appendChild(head);
+    box.appendChild(node("p", text));
+    if (reasons.length) {
+      const ul = node("ul");
+      for (const r of reasons) ul.appendChild(node("li", r));
+      box.appendChild(ul);
+    }
+    if (actions.length) {
+      const row = node("div", null, "row wrap");
+      for (const a of actions) row.appendChild(a);
+      box.appendChild(row);
+    }
+  }
+
+  // ---------- 結果（4つの数字） ----------
+  let expandedMetric = null;
+  function median(xs) { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; }
+  function mostCommon(xs) {
+    const c = new Map();
+    for (const x of xs) c.set(x, (c.get(x) || 0) + 1);
+    let best = null, n = 0;
+    for (const [k, v] of c) if (v > n) { best = k; n = v; }
+    return best;
+  }
+
+  function renderSummary() {
+    const box = $("summary");
+    clear(box);
+    for (const [id, name, unit] of METRICS) {
+      const ms = model.metrics.filter((m) => m.metric_id === id);
+      const withValue = ms.filter((m) => m.value !== null && m.value !== undefined && m.status !== "unavailable");
+      const card = node("button", null, "metric");
+      card.type = "button";
+      card.setAttribute("aria-expanded", String(expandedMetric === id));
+      card.appendChild(node("span", name, "metric-name"));
+      if (withValue.length) {
+        const vals = withValue.map((m) => m.value);
+        const med = median(vals);
+        const digits = unit === "°" ? 0 : (unit === "s" ? (Math.max(...withValue.map((m) => m.interval ? (m.interval.upper - m.interval.lower) / 2 : 0)) >= 0.005 ? 2 : 3) : 2);
+        const val = node("span", (unit === "s" ? med.toFixed(digits) : unit === "°" ? Math.round(med) : med.toFixed(digits)), "metric-value");
+        val.appendChild(node("small", unit));
+        card.appendChild(val);
+        const ivs = withValue.filter((m) => m.interval);
+        if (ivs.length) {
+          const lo = Math.min(...ivs.map((m) => m.interval.lower)), hi = Math.max(...ivs.map((m) => m.interval.upper));
+          card.appendChild(node("span", "幅 " + lo.toFixed(digits) + "〜" + hi.toFixed(digits) + unit + "（" + withValue.length + "回分）", "metric-range"));
+        } else {
+          card.appendChild(node("span", withValue.length + "回分の中央値", "metric-range"));
+        }
+        const st = withValue.reduce((a, m) => (RANK[m.status] > RANK[a] ? m.status : a), "valid");
+        card.appendChild(node("span", STATE[st], "state state-" + st));
+      } else {
+        card.appendChild(node("span", "—", "metric-value none"));
+        card.appendChild(node("span", STATE.unavailable, "state state-unavailable"));
+        const why = mostCommon(ms.flatMap((m) => m.reasons || []));
+        if (why) card.appendChild(node("span", plainReason(why), "metric-why"));
+      }
+      if (expandedMetric === id) card.appendChild(metricDetail(ms, unit));
+      card.addEventListener("click", (ev) => {
+        if (ev.target.closest(".metric-detail")) return;
+        expandedMetric = expandedMetric === id ? null : id;
+        renderSummary();
+      });
+      box.appendChild(card);
+    }
+    $("feedback-text").textContent = "フォームの良し悪しの判定・改善の提案は、専門家が確かめた基準がまだないため出していません。";
+  }
+
+  /** 内部向けの理由を、利用者向けに短くする。 */
+  function plainReason(r) {
+    if (/実時間|slowmo|capture_time/.test(r)) return "撮影したときの時間が分からない";
+    if (/3回未満/.test(r)) return "続けて見えた接地が少ない";
+    if (/対応する離地/.test(r)) return "離地が見えていない";
+    if (/途切れ/.test(r)) return "途中で見えなくなっている";
+    if (/側面でない/.test(r)) return "横から撮った動画でないと測れない";
+    if (/見えない|信頼度不足/.test(r)) return "関節がはっきり見えていない";
+    if (/では/.test(r) && /指標/.test(r)) return "この種目では出していない";
+    return r.length > 40 ? r.slice(0, 40) + "…" : r;
+  }
+
+  function metricDetail(ms, unit) {
+    const box = node("div", null, "metric-detail");
+    for (const m of ms) {
+      const ids = (m.evidence_refs && m.evidence_refs.frame_ids) || [];
+      const target = ids[ids.length > 1 ? 1 : 0];
+      const b = node("button");
+      b.type = "button";
+      b.appendChild(node("span", m.side === "left" ? "左" : m.side === "right" ? "右" : "—", m.side === "left" ? "side-l" : m.side === "right" ? "side-r" : ""));
+      b.appendChild(node("span", m.value === null || m.value === undefined ? (m.reasons[0] ? plainReason(m.reasons[0]) : "—") : m.display));
+      b.appendChild(node("span", STATE[m.status], "state state-" + m.status));
+      b.title = [...(m.reasons || []), ...(m.limitations || [])].join("\n");
+      if (target !== undefined && model.positionById.has(target)) b.addEventListener("click", () => seekFrame(target));
+      else b.disabled = true;
+      box.appendChild(b);
+    }
+    return box;
+  }
+
+  // ---------- 接地・離地と修正 ----------
+  function renderEventsSummary() {
+    const ev = model.events;
+    const n = (side, type) => ev.filter((e) => e.side === side && e.event_type === type).length;
+    const review = ev.filter((e) => e.quality_status !== "valid").length;
+    $("events-summary").textContent = ev.length
+      ? "左の接地 " + n("left", "foot_contact") + " 回・右の接地 " + n("right", "foot_contact") + " 回" + (review ? "（うち " + review + " 件は要確認）" : "") + "。タイムラインの印で位置を確かめられます。"
+      : "接地・離地を見つけられませんでした。地面の線の位置や、撮った向きを確かめてください。";
+  }
+
+  function selectEvent(id, seekTo) {
+    selectedEvent = id;
+    const e = model.events.find((x) => x.event_id === id);
+    if (e && seekTo) seekFrame(e.evidence_frame_id);
+    renderInspector();
+    renderTimeline();
+  }
+
+  function renderInspector() {
+    const box = $("inspector");
+    clear(box);
+    if (!editing || !model) return;
+    const e = selectedEvent && model.events.find((x) => x.event_id === selectedEvent);
+    if (!e) {
+      box.appendChild(node("p", "直したい印をタイムラインで選んでください。", "muted small"));
+      return;
+    }
+    const kind = (e.side === "left" ? "左足の" : "右足の") + (e.event_type === "foot_contact" ? "接地" : "離地");
+    const iv = e.time_interval_sec || {};
+    box.appendChild(node("strong", kind + (e.source === "manual" ? "（修正済み）" : "")));
+    box.appendChild(node("span", "コマ " + e.source_frame_ids.join("→") + "　" + fmtClock(iv.lower) + "〜" + fmtClock(iv.upper), "muted small mono"));
+    if (e.quality_reasons && e.quality_reasons.length) box.appendChild(node("span", "要確認: " + e.quality_reasons.join("、"), "small"));
+    const row = node("div", null, "row wrap");
+    row.appendChild(button("いま表示中のコマに移す", () => correct({ action: "move", event_id: e.event_id, after_frame_id: PC.view(model, state).frameId }), "primary"));
+    row.appendChild(button("前後をゆっくり見る", () => {
+      stopPlayback();
+      state = PC.setRate(PC.loopAroundEvent(model, state, e, 6), 0.25);
+      setSeg("rate-seg", "0.25");
+      togglePlay();
+    }, "quiet"));
+    row.appendChild(button("この印を消す", () => correct({ action: "delete", event_id: e.event_id }), "quiet danger"));
+    box.appendChild(row);
+  }
+
+  async function correct(body) {
+    if (!viewingLatest) { $("c-status").textContent = "前の版は修正できません"; return; }
+    const reason = $("c-reason").value.trim();
+    if (!reason) { $("c-status").textContent = "理由を選ぶか入力してください"; $("c-reason").focus(); return; }
+    body.reason = reason;
+    $("c-status").textContent = "計算し直しています…";
+    try {
+      const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections", body);
+      await afterCorrection(snap);
+      $("c-status").textContent = "直しました。関係する値も計算し直しています。";
+      toast("修正しました");
+    } catch (err) { $("c-status").textContent = "直せませんでした: " + err.message; }
+  }
+
+  async function afterCorrection(snap) {
+    const keep = PC.view(model, state).frameId;
+    current = await api("GET", "/api/videos/" + current.video.id);
+    renderHistory();
+    viewingLatest = true;
+    model = PC.loadSnapshot(snap);
+    times = model.frames.map((f) => f.t);
+    state = PC.seekFrameId(model, PC.setRate(PC.createState(), state.rate), keep);
+    selectedEvent = null;
+    renderAll();
+  }
+
+  function renderCorrections() {
+    const ul = $("corrections-list");
+    clear(ul);
+    const unapplied = new Map(((model.snapshot.events || {}).unapplied_corrections || []).map((u) => [u.index, u.reason]));
+    const list = viewingLatest ? (current.corrections || []) : ((model.snapshot.events || {}).corrections || []);
+    const verb = { move: "移動", add: "追加", delete: "削除" };
+    list.forEach((c, i) => {
+      const li = node("li");
+      const what = (verb[c.action] || c.action) + "：" + c.reason + (c.after_frame_id !== null && c.after_frame_id !== undefined ? "（コマ " + c.after_frame_id + "）" : "");
+      const label = node("span", what, c.revoked_at ? "off" : "");
+      if (c.revoked_at) label.title = "取り消し: " + (c.revoked_reason || "");
+      else if (unapplied.has(i)) label.title = "当てられなかった: " + unapplied.get(i);
+      li.appendChild(label);
+      if (unapplied.has(i) && !c.revoked_at) li.appendChild(node("span", "当てられなかった", "state state-review_required"));
+      if (!c.revoked_at && viewingLatest) li.appendChild(button("取り消す", () => revokeCorrection(i), "link"));
+      ul.appendChild(li);
+    });
+    if (!list.length) ul.appendChild(node("li", "まだありません", "muted"));
+  }
+
+  async function revokeCorrection(i) {
+    const reason = $("c-reason").value.trim() || "取り消し";
+    try {
+      const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections/" + i + "/revoke", { reason: reason });
+      await afterCorrection(snap);
+      toast("修正を取り消しました");
+    } catch (err) { toast("取り消せませんでした: " + err.message, true); }
+  }
+
+  // ---------- 地面の指定（映像を2点クリック） ----------
+  let pick = null;   // null / [] / [{x,y}]
+  function startPick() {
+    if (!model || !viewingLatest) return;
+    pick = [];
+    $("stage").classList.add("picking");
+    $("pick-hint").textContent = "地面（足が着く線）の上を、左寄りで1回クリックしてください。Esc でやめる";
+    $("pick-hint").hidden = false;
+    $("stage").scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  function endPick() {
+    pick = null;
+    $("stage").classList.remove("picking");
+    $("pick-hint").hidden = true;
+  }
+  function onStageClick(ev) {
+    if (!pick || !model) return;
+    const rect = $("stage").getBoundingClientRect();
+    const size = PC.imageSize(model);
+    const p = { x: (ev.clientX - rect.left) / rect.width * size.width, y: (ev.clientY - rect.top) / rect.height * size.height };
+    pick.push(p);
+    if (pick.length === 1) {
+      $("pick-hint").textContent = "同じ地面の上を、右寄りでもう1回クリックしてください";
+      render();
+      return;
+    }
+    const [a, b] = pick;
+    endPick();
+    const slope = Math.abs(b.x - a.x) > 20 ? (b.y - a.y) / (b.x - a.x) : 0;
+    if (Math.abs(slope) > 1) { toast("2点の傾きが大きすぎます。地面の上を左右でクリックしてください", true); return; }
+    const band = (model.snapshot.detector && model.snapshot.detector.contact_band_px) || 6;
+    saveGround({ ground_y: (a.y + b.y) / 2, ground_x0: (a.x + b.x) / 2, ground_slope: slope, contact_band_px: Math.min(200, Math.max(1, band)) });
+  }
+  async function saveGround(g) {
+    try {
+      await api("PATCH", "/api/videos/" + current.video.id, { ground_override: g });
+      toast("地面を決めました。計算し直しています");
+      await startJob("reanalyze", "performance");
+    } catch (err) { toast(err.message, true); }
   }
 
   // ---------- ジョブ ----------
+  let jobStarted = null;
   async function startJob(kind, mode) {
     try {
       const r = await api("POST", "/api/videos/" + current.video.id + "/jobs", { kind: kind, mode: mode });
       current.job = r.job;
+      jobStarted = { at: Date.now(), progress: 0 };
       showJob();
-    } catch (err) { banner(err.message); }
+    } catch (err) { toast(err.message, true); }
   }
 
+  const JOB_TITLE = {
+    queued: "順番を待っています", probing: "動画の時間を読み取っています", inferring: "体の動きを読み取っています",
+    analyzing: "値を計算しています", cancel_requested: "取り消しています",
+  };
   function showJob() {
     const j = current && current.job;
     const active = j && ["queued", "probing", "inferring", "analyzing", "cancel_requested"].includes(j.state);
-    $("job-box").hidden = !j || (!active && j.state === "completed");
-    if (j) {
-      $("job-text").textContent = (JOB_LABEL[j.state] || j.state) + (j.message ? "：" + j.message : "") + (j.error ? "（" + j.error + "）" : "");
-      $("job-progress").value = j.progress || 0;
-      $("job-cancel").hidden = !active;
-    }
-    if (j && j.state === "failed") {
-      $("no-analysis-text").textContent = "解析できませんでした: " + (j.error || "") + "。撮影条件を確かめて、もう一度試してください。";
-    } else if (active) {
-      $("no-analysis-text").textContent = "解析中です。この画面を閉じても解析は続きます。";
+    $("job-box").hidden = !active;
+    $("no-analysis").hidden = !!model || !!active;
+    if (active) {
+      $("job-text").textContent = JOB_TITLE[j.state] || j.state;
+      $("job-progress").style.width = Math.round((j.progress || 0) * 100) + "%";
+      // 残り時間の目安（姿勢推定の進み方から）
+      let eta = j.message || "";
+      if (j.state === "inferring" && jobStarted && j.progress > jobStarted.progress + 0.02) {
+        const rate = (j.progress - jobStarted.progress) / ((Date.now() - jobStarted.at) / 1000);
+        const left = (1 - j.progress) / rate;
+        if (isFinite(left) && left > 0) eta = "残り約 " + (left > 90 ? Math.round(left / 60) + " 分" : Math.max(5, Math.round(left / 5) * 5) + " 秒") + "（" + j.message + "）";
+      }
+      if (!jobStarted) jobStarted = { at: Date.now(), progress: j.progress || 0 };
+      $("job-eta").textContent = eta;
+      $("job-cancel").hidden = j.state === "cancel_requested";
+      pollJob();
     } else {
-      $("no-analysis-text").textContent = "まだ解析していません。";
+      jobStarted = null;
+    }
+    if (!model && !active) {
+      $("no-analysis-text").textContent = j && j.state === "failed"
+        ? "解析できませんでした。" + (j.error ? "（" + j.error + "）" : "") + " 撮った条件を確かめて、もう一度試してください。"
+        : j && j.state === "cancelled" ? "解析を取り消しました。" : "この動画はまだ解析していません。";
     }
     $("run-performance").disabled = !!active;
     $("run-balanced").disabled = !!active;
-    if (active) pollJob();
   }
 
   function pollJob() {
     stopPolling();
     pollTimer = setTimeout(async () => {
-      if (!current || !current.job) return;
+      if (!current || !current.job || $("view-video").hidden) return;
       try {
         const r = await api("GET", "/api/jobs/" + current.job.id);
         const was = current.job.state;
         current.job = r.job;
-        if (r.job.state === "completed" && was !== "completed") {
-          await openVideo(current.video.id);
-          return;
-        }
+        if (r.job.state === "completed" && was !== "completed") { await openVideo(current.video.id); toast("解析が終わりました"); return; }
+        if (r.job.state === "failed" && was !== "failed") toast("解析できませんでした: " + (r.job.error || ""), true);
         showJob();
-      } catch (err) { banner(err.message); }
-    }, 1000);
+      } catch (err) { toast(err.message, true); }
+    }, 1500);
   }
 
   async function saveMeta() {
     const fields = {
-      discipline: $("m-discipline").value, camera_view: $("m-view").value, direction: $("m-direction").value,
+      discipline: $("m-discipline").value, camera_view: segValue("m-view"), direction: segValue("m-direction"),
       practice_date: $("m-date").value || null, place: $("m-place").value, record: $("m-record").value,
       tags: $("m-tags").value, notes: $("m-notes").value, declared_capture_fps: $("m-fps").value.trim(),
       declared_slowmo: $("m-slowmo").checked,
@@ -433,47 +828,16 @@
     } catch (err) { $("m-status").textContent = "保存できませんでした: " + err.message; }
   }
 
-  async function saveGround(g) {
-    try {
-      await api("PATCH", "/api/videos/" + current.video.id, { ground_override: g });
-      await startJob("reanalyze", "performance");
-    } catch (err) { banner(err.message); }
-  }
-
   async function deleteVideo() {
-    if (!confirm("この動画と、解析結果・訂正・フレーム画像をすべて削除します。元に戻せません。")) return;
+    if (!confirm("この動画と、解析の結果・修正・画像をすべて削除します。元に戻せません。")) return;
     try {
       await api("DELETE", "/api/videos/" + current.video.id, {});
+      toast("削除しました");
       location.hash = "#/";
-    } catch (err) { banner(err.message); }
+    } catch (err) { toast(err.message, true); }
   }
 
-  async function correct(body) {
-    const reason = $("c-reason").value.trim();
-    if (!reason) { $("c-status").textContent = "訂正の理由を入力してください"; $("c-reason").focus(); return; }
-    body.reason = reason;
-    $("c-status").textContent = "再計算中…";
-    if (!viewingLatest) { $("c-status").textContent = "過去の版は訂正できません"; return; }
-    try {
-      const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections", body);
-      await afterCorrection(snap);
-      $("c-status").textContent = "訂正を保存し、依存する指標を計算し直しました";
-    } catch (err) { $("c-status").textContent = "訂正できませんでした: " + err.message; }
-  }
-
-  async function afterCorrection(snap) {
-    const keep = PC.view(model, state).frameId;
-    current = await api("GET", "/api/videos/" + current.video.id);
-    renderHistory();
-    viewingLatest = true;
-    model = PC.loadSnapshot(snap);
-    state = PC.seekFrameId(model, PC.setRate(PC.createState(), state.rate), keep);
-    selectedEvent = null;
-    renderTitle();
-    renderQuality(); renderEvents(); renderMetrics(); renderCorrections(); render();
-  }
-
-  // ---------- 描画 ----------
+  // ---------- 映像の描画 ----------
   const BONES = [
     ["left_shoulder", "right_shoulder"], ["left_hip", "right_hip"], ["left_shoulder", "left_hip"], ["right_shoulder", "right_hip"],
     ["left_shoulder", "left_elbow"], ["left_elbow", "left_wrist"], ["right_shoulder", "right_elbow"], ["right_elbow", "right_wrist"],
@@ -481,7 +845,9 @@
     ["right_hip", "right_knee"], ["right_knee", "right_ankle"], ["right_ankle", "right_heel"], ["right_ankle", "right_toe"],
   ];
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
-
+  function hasSkeleton(v) {
+    return !!(v.overlay && v.overlay.keypoints && Object.values(v.overlay.keypoints).some(Boolean));
+  }
   function imageFor(frameId) {
     const url = PC.frameImageUrl(model, frameId);
     if (!url) return null;
@@ -496,11 +862,6 @@
     return img;
   }
 
-  /** 骨格の点が1つでもあるか（人物を検出できなかったフレームは、点がすべて空の記録になる）。 */
-  function hasSkeleton(v) {
-    return !!(v.overlay && v.overlay.keypoints && Object.values(v.overlay.keypoints).some(Boolean));
-  }
-
   function drawStage(v) {
     const cv = $("stage");
     const ctx = cv.getContext("2d");
@@ -510,33 +871,55 @@
     const img = imageFor(v.frameId);
     if (img && img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, w, h);
     for (const id of PC.prefetchIds(model, state, 8)) imageFor(id);
-    const lw = Math.max(2, w / 400);
-    if ($("show-ground").checked) {
+    const lw = Math.max(2, w / 420);
+    if ($("show-ground").getAttribute("aria-pressed") === "true") {
       const y0 = PC.groundYAt(model, 0), y1 = PC.groundYAt(model, w);
-      if (y0 !== null) {
-        ctx.strokeStyle = cssVar("--ground"); ctx.lineWidth = lw; ctx.setLineDash([lw * 4, lw * 3]);
+      if (y0 !== null && y0 < h * 2) {
+        ctx.strokeStyle = cssVar("--ground"); ctx.lineWidth = lw; ctx.setLineDash([lw * 5, lw * 4]);
         ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(w, y1); ctx.stroke(); ctx.setLineDash([]);
       }
     }
-    if ($("show-skeleton").checked && hasSkeleton(v)) {
-      const kp = v.overlay.keypoints || {};
-      ctx.lineWidth = lw * 1.5;
+    if ($("show-skeleton").getAttribute("aria-pressed") === "true" && hasSkeleton(v)) {
+      const kp = v.overlay.keypoints;
+      const colorOf = (a, b) => (a.startsWith("left") && b.startsWith("left")) ? cssVar("--left")
+        : (a.startsWith("right") && b.startsWith("right")) ? cssVar("--right") : "#ffffff";
+      ctx.lineCap = "round";
+      ctx.lineWidth = lw * 1.8;
       for (const [a, b] of BONES) {
         const p = kp[a], q = kp[b];
         if (!p || !q) continue;
-        ctx.strokeStyle = a.startsWith("left") && b.startsWith("left") ? cssVar("--joint") : cssVar("--bone");
+        ctx.strokeStyle = colorOf(a, b);
         ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
       }
       for (const name of Object.keys(kp)) {
         const p = kp[name];
         if (!p) continue;
-        ctx.fillStyle = p[2] >= 0.3 ? cssVar("--joint") : cssVar("--review");
-        ctx.beginPath(); ctx.arc(p[0], p[1], lw * 2.2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = p[2] >= 0.3 ? "#ffffff" : "rgba(255,255,255,.35)";
+        ctx.beginPath(); ctx.arc(p[0], p[1], lw * 1.6, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // このコマの接地・離地
+    const evs = PC.eventsAtFrame(model, v.frameId).filter((e) => e.evidence_frame_id === v.frameId);
+    if (evs.length) {
+      ctx.font = "600 " + Math.round(w / 48) + "px system-ui, sans-serif";
+      let y = h * 0.07;
+      for (const e of evs) {
+        const label = (e.side === "left" ? "左 " : "右 ") + (e.event_type === "foot_contact" ? "接地" : "離地");
+        ctx.fillStyle = e.side === "left" ? cssVar("--left") : cssVar("--right");
+        const tw = ctx.measureText(label).width;
+        ctx.fillRect(w * 0.02, y - w / 48, tw + w / 60, w / 36);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, w * 0.02 + w / 120, y);
+        y += w / 30;
       }
     }
     if (!hasSkeleton(v)) {
-      ctx.fillStyle = "#fff"; ctx.font = Math.round(w / 40) + "px system-ui, sans-serif";
-      ctx.fillText("このフレームでは対象の人物を検出できませんでした", w * 0.03, h * 0.08);
+      ctx.fillStyle = "rgba(255,255,255,.75)"; ctx.font = Math.round(w / 52) + "px system-ui, sans-serif";
+      ctx.fillText("このコマでは、追っている人が見えていません", w * 0.02, h - h * 0.04);
+    }
+    if (pick && pick.length) {
+      ctx.fillStyle = cssVar("--ground");
+      for (const p of pick) { ctx.beginPath(); ctx.arc(p.x, p.y, lw * 3, 0, Math.PI * 2); ctx.fill(); }
     }
   }
 
@@ -544,143 +927,150 @@
     if (!model) return;
     const v = PC.view(model, state);
     drawStage(v);
-    $("ro-frame").textContent = v.frameId + "  (" + (v.position + 1) + " / " + v.frameCount + ")";
-    $("ro-pts").textContent = v.pts + " × " + v.timeBase;
-    $("ro-time").textContent = PC.formatSeconds(v.sourceTime) + "  [" + v.sourceTimeExact + "]";
+    $("ro-time").textContent = fmtClock(v.sourceTime) + "　" + (v.position + 1) + " / " + v.frameCount + " コマ";
+    $("ro-frame").textContent = v.frameId + "（" + (v.position + 1) + " / " + v.frameCount + "）";
+    $("ro-pts").textContent = v.pts + " × " + v.timeBase + "　[" + v.sourceTimeExact + "]";
     $("ro-elapsed").textContent = (v.playbackElapsedMs / 1000).toFixed(3) + " s（×" + v.rate + "）";
-    $("ro-overlay").textContent = !hasSkeleton(v) ? "なし（人物を検出できない）" : String(v.overlayFrameId);
+    $("ro-overlay").textContent = hasSkeleton(v) ? String(v.overlayFrameId) : "なし（人が見えていない）";
     const evs = PC.eventsAtFrame(model, v.frameId);
     $("ro-events").textContent = evs.length ? evs.map((e) => (e.side === "left" ? "左" : "右") + (e.event_type === "foot_contact" ? "接地" : "離地")).join("、") : "—";
-    $("scrubber").value = String(v.position);
-    $("btn-play").textContent = state.playing ? "一時停止" : "再生";
+    $("btn-play").textContent = state.playing ? "❚❚" : "▶︎";
+    $("btn-play").setAttribute("aria-label", state.playing ? "一時停止" : "再生");
     $("btn-unloop").hidden = !state.loop;
-    for (const tr of $("events-body").querySelectorAll("tr")) {
-      tr.classList.toggle("current", (tr.dataset.frames || "").split(",").includes(String(v.frameId)));
+    renderTimeline();
+  }
+
+  // ---------- タイムライン ----------
+  const PAD = 10;
+  function span() { return { t0: times[0] || 0, t1: times[times.length - 1] || 1 }; }
+  function timeToX(t, width) { const { t0, t1 } = span(); return PAD + (t - t0) / Math.max(1e-9, t1 - t0) * (width - 2 * PAD); }
+  function xToTime(x, width) { const { t0, t1 } = span(); return t0 + (x - PAD) / Math.max(1, width - 2 * PAD) * (t1 - t0); }
+  function nearestPosition(t) {
+    let lo = 0, hi = times.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid + 1; else hi = mid; }
+    if (lo > 0 && Math.abs(times[lo - 1] - t) < Math.abs(times[lo] - t)) lo -= 1;
+    return lo;
+  }
+  function laneY(side, height) { return side === "left" ? height * 0.30 : height * 0.70; }
+  function contactBars() {
+    const bars = [];
+    for (const side of ["left", "right"]) {
+      const seq = model.events.filter((e) => e.side === side);
+      seq.forEach((e, i) => {
+        if (e.event_type !== "foot_contact") return;
+        const n = seq[i + 1];
+        bars.push({ side: side, start: e, end: n && n.event_type === "toe_off" ? n : null });
+      });
     }
+    return bars;
+  }
+  function eventAt(x, y, width) {
+    const h = $("timeline").clientHeight;
+    let best = null, bd = 9;
+    for (const e of model.events) {
+      const ex = timeToX(e.event_time_sec, width), ey = laneY(e.side, h);
+      const d = Math.max(Math.abs(ex - x), Math.abs(ey - y) / 3);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
+  function renderTimeline() {
+    const cv = $("timeline");
+    if (!model || !cv.clientWidth) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (cv.width !== Math.round(W * dpr)) cv.width = Math.round(W * dpr);
+    if (cv.height !== Math.round(H * dpr)) cv.height = Math.round(H * dpr);
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    // 見えていない区間
+    const gapIds = new Set((model.snapshot.frame_completeness || {}).unobservable_frame_ids || []);
+    ctx.fillStyle = cssVar("--gap");
+    const fw = Math.max(1, (W - 2 * PAD) / Math.max(1, times.length));
+    model.frames.forEach((f, i) => { if (gapIds.has(f.source_frame_id)) ctx.fillRect(timeToX(times[i], W) - fw / 2, 4, fw, H - 8); });
+    for (const b of (model.snapshot.events.observation_breaks || [])) {
+      const x0 = timeToX(b.time_interval_sec.lower, W), x1 = timeToX(b.time_interval_sec.upper, W);
+      ctx.fillStyle = cssVar("--gap");
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(x0, laneY(b.side, H) - 9, Math.max(1, x1 - x0), 18);
+      ctx.globalAlpha = 1;
+    }
+    // レーンの線
+    ctx.strokeStyle = cssVar("--line");
+    ctx.lineWidth = 1;
+    for (const side of ["left", "right"]) {
+      ctx.beginPath(); ctx.moveTo(PAD, laneY(side, H)); ctx.lineTo(W - PAD, laneY(side, H)); ctx.stroke();
+    }
+    // 接地している区間
+    for (const bar of contactBars()) {
+      const color = bar.side === "left" ? cssVar("--left") : cssVar("--right");
+      const y = laneY(bar.side, H);
+      const x0 = timeToX(bar.start.event_time_sec, W);
+      const x1 = bar.end ? timeToX(bar.end.event_time_sec, W) : x0 + 3;
+      const review = bar.start.quality_status !== "valid" || (bar.end && bar.end.quality_status !== "valid");
+      ctx.fillStyle = color;
+      ctx.globalAlpha = review ? 0.45 : 1;
+      ctx.fillRect(x0, y - 7, Math.max(3, x1 - x0), 14);
+      ctx.globalAlpha = 1;
+    }
+    // 印（修正中は大きく）
+    for (const e of model.events) {
+      const x = timeToX(e.event_time_sec, W), y = laneY(e.side, H);
+      const sel = e.event_id === selectedEvent;
+      if (!editing && !sel) continue;
+      ctx.fillStyle = sel ? cssVar("--ink") : (e.side === "left" ? cssVar("--left") : cssVar("--right"));
+      ctx.beginPath();
+      const r = sel ? 6 : 4;
+      if (e.event_type === "foot_contact") { ctx.moveTo(x, y - r - 9); ctx.lineTo(x - r, y - 9 - 2 * r); ctx.lineTo(x + r, y - 9 - 2 * r); }
+      else { ctx.moveTo(x, y + r + 9); ctx.lineTo(x - r, y + 9 + 2 * r); ctx.lineTo(x + r, y + 9 + 2 * r); }
+      ctx.closePath(); ctx.fill();
+    }
+    // ループ範囲
+    if (state.loop) {
+      const x0 = timeToX(times[state.loop[0]], W), x1 = timeToX(times[state.loop[1]], W);
+      ctx.fillStyle = cssVar("--ink"); ctx.globalAlpha = 0.08; ctx.fillRect(x0, 0, x1 - x0, H); ctx.globalAlpha = 1;
+    }
+    // 再生位置
+    const px = timeToX(times[state.position], W);
+    ctx.strokeStyle = cssVar("--ink"); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px, 2); ctx.lineTo(px, H - 2); ctx.stroke();
+    ctx.fillStyle = cssVar("--ink");
+    ctx.beginPath(); ctx.arc(px, 4, 4, 0, Math.PI * 2); ctx.fill();
   }
 
   function renderQuality() {
-    clear($("quality-list")); clear($("quality-notes"));
+    clear($("quality-list")); clear($("quality-notes")); clear($("unsupported-list"));
     const s = model.snapshot, q = s.capture_quality || {}, c = s.frame_completeness || {}, iv = q.interval_s || {};
-    const fmt = (x) => (typeof x === "number" ? (x * 1000).toFixed(2) + " ms" : "—");
+    const ms = (x) => (typeof x === "number" ? (x * 1000).toFixed(1) + " ms" : "—");
+    const g = s.ground_estimate || {};
     const rows = [
-      ["撮影時間軸", PC.CAPTURE_LABEL[q.capture_time_status] || q.capture_time_status],
-      ["公称FPS", q.nominal_fps === null || q.nominal_fps === undefined ? "—" : q.nominal_fps],
-      ["撮影FPS", q.capture_fps === null || q.capture_fps === undefined ? "不明" : q.capture_fps],
-      ["フレーム間隔", fmt(iv.min) + " / " + fmt(iv.median) + " / " + fmt(iv.max) + "（最小/中央/最大）"],
-      ["可変FPS", q.vfr ? "あり" : "なし"],
-      ["欠落の疑い", (q.gap_frame_ids || []).length + " 箇所"],
-      ["復号失敗", c.decode_check === "packets" ? (c.decode_failed_source_frame_ids || []).length + " 枚" : "確認できない"],
-      ["観測の途切れ", ((s.events && s.events.observation_breaks) || []).length + " 箇所（またいだ指標は出さない）"],
-      ["解析フレーム", (c.analyzed_frame_count ?? "—") + " / " + (c.decoded_frame_count ?? "—")],
-      ["人物を検出できない", (c.unobservable_frame_ids || []).length + " フレーム（取り直し " + (c.reacquired_frame_ids || []).length + " 回）"],
-      ["地面の線", groundLabel(s.ground_estimate) + ((s.ground_quality && s.ground_quality.problems && s.ground_quality.problems.length) ? "／問題: " + s.ground_quality.problems.join("、") : "")],
+      ["撮影の時間", PC.CAPTURE_LABEL[q.capture_time_status] || q.capture_time_status],
+      ["コマの間隔", ms(iv.median) + (q.vfr ? "（一定でない）" : "") + (q.nominal_fps ? "　約 " + Math.round(q.nominal_fps) + " fps" : "")],
+      ["抜けたコマ", (q.gap_frame_ids || []).length + " か所" + (c.decode_check === "packets" ? "・読めなかったコマ " + (c.decode_failed_source_frame_ids || []).length : "")],
+      ["人が見えないコマ", (c.unobservable_frame_ids || []).length + " / " + (c.decoded_frame_count ?? "—")],
+      ["地面の線", g.method === "user_override" ? "自分で指定" : g.method === "unavailable" ? "推定できない" : "自動推定"],
+      ["解析", s.preview ? "軽く試した結果" : "精度優先・全コマ"],
       ["モデル", s.model ? s.model.weights_version : "—"],
-      ["モード", s.preview ? "プレビュー（" + (s.preview_reason || "") + "）" : "精度優先・全原本フレーム"],
-      ["解析ID", (s.analysis_id || "").slice(0, 12) + (s.revision ? "（版 " + s.revision + "）" : "")],
+      ["版", (s.revision || "—") + "（" + (s.analysis_id || "").slice(0, 10) + "）"],
     ];
     for (const [k, v] of rows) { $("quality-list").appendChild(node("dt", k)); $("quality-list").appendChild(node("dd", v)); }
     for (const n of q.capture_time_notes || []) $("quality-notes").appendChild(node("li", n));
-  }
-
-  function groundLabel(g) {
-    if (!g) return "—";
-    if (g.method === "user_override") return "手動で指定";
-    if (g.method === "unavailable") return "推定できない（" + (g.reason || "") + "）";
-    return "自動推定（足の最下点 " + (g.foot_points || 0) + " 点から）";
-  }
-
-  function statusCell(status) {
-    return node("td", PC.STATUS_LABEL[status] || status, "status status-" + status);
-  }
-
-  function seek(frameId) {
-    stopPlayback();
-    state = PC.seekFrameId(model, state, frameId);
-    render();
-  }
-
-  function renderEvents() {
-    const body = $("events-body");
-    clear(body);
-    const typeLabel = { foot_contact: "接地", toe_off: "離地" };
-    for (const e of model.events) {
-      const tr = document.createElement("tr");
-      tr.dataset.frames = (e.source_frame_ids || []).join(",");
-      if (selectedEvent === e.event_id) tr.classList.add("selected");
-      tr.appendChild(node("td", (typeLabel[e.event_type] || e.event_type) + (e.source === "manual" ? "（手動）" : "")));
-      tr.appendChild(node("td", e.side === "left" ? "左" : "右"));
-      const iv = e.time_interval_sec || {};
-      tr.appendChild(node("td", PC.formatSeconds(iv.lower, 4) + " 〜 " + PC.formatSeconds(iv.upper, 4), "mono"));
-      tr.appendChild(node("td", (e.source_frame_ids || []).join(" → "), "mono"));
-      const st = statusCell(e.quality_status === "valid" ? "valid" : "review_required");
-      if (e.quality_reasons && e.quality_reasons.length) st.title = e.quality_reasons.join(" / ");
-      tr.appendChild(st);
-      const td = document.createElement("td");
-      td.appendChild(button("移動", () => seek(e.evidence_frame_id)));
-      td.appendChild(button("前後をループ", () => {
-        stopPlayback();
-        state = PC.setRate(PC.loopAroundEvent(model, state, e, 6), Math.min(state.rate, 0.25));
-        $("rate-select").value = String(state.rate);
-        render();
-      }));
-      if (viewingLatest) {
-        td.appendChild(button("表示中のフレームへ移す", () => correct({ action: "move", event_id: e.event_id,
-                                                                          after_frame_id: PC.view(model, state).frameId })));
-        td.appendChild(button("削除", () => correct({ action: "delete", event_id: e.event_id }), "danger"));
-      }
-      tr.appendChild(td);
-      tr.addEventListener("click", (ev) => { if (ev.target.tagName !== "BUTTON") { selectedEvent = e.event_id; renderEvents(); } });
-      body.appendChild(tr);
-    }
-    if (!model.events.length) {
-      const tr = document.createElement("tr");
-      const td = node("td", "接地・離地を検出できませんでした。地面の線の位置や撮影角度を確かめてください。");
-      td.colSpan = 6;
-      tr.appendChild(td);
-      body.appendChild(tr);
-    }
-  }
-
-  function renderMetrics() {
-    const body = $("metrics-body");
-    clear(body);
-    for (const m of model.metrics) {
-      const tr = document.createElement("tr");
-      const name = node("td", metricName(m.metric_id));
-      name.title = m.definition + "（" + m.coordinate_system + "）";
-      tr.appendChild(name);
-      tr.appendChild(node("td", m.side === "left" ? "左" : m.side === "right" ? "右" : "—"));
-      tr.appendChild(node("td", m.display, "mono"));
-      tr.appendChild(statusCell(m.status));
-      const why = document.createElement("td");
-      const ul = node("ul", null, "reasons");
-      for (const r of m.reasons || []) ul.appendChild(node("li", r));
-      for (const r of m.limitations || []) ul.appendChild(node("li", r, "limit"));
-      if (m.apparent_video_value !== null && m.apparent_video_value !== undefined) {
-        ul.appendChild(node("li", "動画上の見かけの値: " + m.apparent_video_value + "（撮影実時間ではない）", "limit"));
-      }
-      why.appendChild(ul);
-      tr.appendChild(why);
-      const ev = document.createElement("td");
-      const ids = (m.evidence_refs && m.evidence_refs.frame_ids) || [];
-      if (ids.length) {
-        const target = ids[ids.length > 1 ? 1 : 0];
-        if (model.positionById.has(target)) ev.appendChild(button("frame " + target, () => seek(target)));
-      }
-      tr.appendChild(ev);
-      body.appendChild(tr);
-    }
-    const ul = $("unsupported-list");
-    clear(ul);
-    const d = model.snapshot.discipline || {};
-    const un = d.unsupported_metrics || {};
-    for (const k of Object.keys(un)) ul.appendChild(node("li", k + " — " + un[k]));
-    if (!Object.keys(un).length) ul.appendChild(node("li", "なし"));
-    $("feedback-text").textContent = (model.snapshot.feedback && model.snapshot.feedback.reason) || "";
+    const un = (s.discipline && s.discipline.unsupported_metrics) || {};
+    const names = { stride_length: "ストライド長", running_speed: "走速度", pace_segment: "ペース区間", hurdle_clearance: "ハードル越え",
+      lead_trail_leg: "リード脚・抜き脚", barrier_clearance: "障害越え", water_jump: "水濠", takeoff_angle: "跳躍角度",
+      takeoff_board: "踏切板", phase_split: "ホップ・ステップ・ジャンプの区切り", bar_clearance: "バーの越え方",
+      approach_curve: "助走の曲線", pole_tracking: "ポールの動き", release_angle: "リリース角度", release_speed: "リリース速度",
+      technique_type: "投げ方の種類", rotation: "回転", implement_path: "用具の軌跡", rule_compliance: "規則の適否",
+      baton_exchange: "バトンの受け渡し" };
+    for (const k of Object.keys(un)) $("unsupported-list").appendChild(node("li", (names[k] || k) + " — " + un[k]));
+    if (!Object.keys(un).length) $("unsupported-list").appendChild(node("li", "なし"));
   }
 
   // ---------- 再生 ----------
+  function seekFrame(frameId) { stopPlayback(); state = PC.seekFrameId(model, state, frameId); render(); }
+  function seekPosition(pos) { stopPlayback(); state = PC.step(model, PC.clearLoop(state), pos - state.position); render(); }
   function stopPlayback() {
     if (timer !== null) clearTimeout(timer);
     timer = null;
@@ -702,7 +1092,7 @@
   }
   function stepBy(d) { if (!model) return; stopPlayback(); state = PC.step(model, state, d); render(); }
 
-  // ---------- 比較 ----------
+  // ================= 比較 =================
   let compareReady = false;
   async function openCompare() {
     const data = await api("GET", "/api/videos");
@@ -710,9 +1100,9 @@
     for (const [id, blank] of [["cmp-a", false], ["cmp-b", true]]) {
       const sel = $(id);
       clear(sel);
-      if (blank) { const o = node("option", "（A と同じ動画）"); o.value = ""; sel.appendChild(o); }
+      if (blank) { const o = node("option", "A と同じ動画（前半と後半などを比べる）"); o.value = ""; sel.appendChild(o); }
       for (const v of withAnalysis) {
-        const o = node("option", (v.practice_date || "") + " " + disciplineName(v.discipline) + " " + v.filename);
+        const o = node("option", fmtDate(v.practice_date) + "　" + disciplineName(v.discipline) + (v.record ? "　" + v.record : "") + "　" + (v.notes || v.filename));
         o.value = v.id;
         sel.appendChild(o);
       }
@@ -721,7 +1111,8 @@
       $("compare-form").addEventListener("submit", (e) => { e.preventDefault(); runCompare(); });
       compareReady = true;
     }
-    if (!withAnalysis.length) banner("解析済みの動画がまだありません。");
+    $("cmp-result").hidden = true;
+    if (!withAnalysis.length) toast("解析が終わった動画がまだありません");
   }
 
   async function runCompare() {
@@ -734,19 +1125,21 @@
       const r = await api("GET", "/api/compare?" + p.toString());
       $("cmp-result").hidden = false;
       clear($("cmp-blocking")); clear($("cmp-warnings")); clear($("cmp-body"));
-      for (const b of r.compatibility.blocking) $("cmp-blocking").appendChild(node("li", "比べられない: " + b));
+      for (const b of r.compatibility.blocking) $("cmp-blocking").appendChild(node("li", "比べられません：" + b));
       for (const w of r.compatibility.warnings) $("cmp-warnings").appendChild(node("li", w));
-      const fmt = (s) => (s ? (+s.median.toFixed(3)) + " " + s.unit + "（" + s.n + "件" + (s.excluded ? "、除外 " + s.excluded : "") + "）" : "—");
+      const name = Object.fromEntries(METRICS.map(([id, n, u]) => [id, [n, u]]));
+      const fmt = (s, u) => (s ? (+s.median.toFixed(u === "°" ? 0 : 3)) + u : "—");
       for (const row of r.rows) {
-        const tr = document.createElement("tr");
-        tr.appendChild(node("td", metricName(row.metric_id)));
-        tr.appendChild(node("td", fmt(row.a)));
-        tr.appendChild(node("td", fmt(row.b)));
-        tr.appendChild(node("td", row.diff === null ? "—" : (+row.diff.toFixed(3)).toString(), "mono"));
-        tr.appendChild(node("td", row.note));
-        $("cmp-body").appendChild(tr);
+        const [n, u] = name[row.metric_id] || [row.metric_id, ""];
+        const card = node("div", null, "cmp-row");
+        card.appendChild(node("strong", n));
+        const a = node("div"); a.appendChild(node("div", fmt(row.a, u), "v")); a.appendChild(node("div", row.a ? "A ・ " + row.a.n + "回分" : "A", "n")); card.appendChild(a);
+        const b = node("div"); b.appendChild(node("div", fmt(row.b, u), "v")); b.appendChild(node("div", row.b ? "B ・ " + row.b.n + "回分" : "B", "n")); card.appendChild(b);
+        const d = node("div"); d.appendChild(node("div", row.diff === null ? "—" : (row.diff > 0 ? "+" : "") + (+row.diff.toFixed(u === "°" ? 1 : 3)) + u, "v")); d.appendChild(node("div", "B − A", "n")); card.appendChild(d);
+        card.appendChild(node("div", row.note, "note"));
+        $("cmp-body").appendChild(card);
       }
-    } catch (err) { banner("比べられませんでした: " + err.message); }
+    } catch (err) { toast("比べられませんでした: " + err.message, true); }
   }
 
   window.addEventListener("hashchange", route);

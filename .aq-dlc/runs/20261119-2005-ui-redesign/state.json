@@ -1,0 +1,166 @@
+{
+  "run_id": "20261119-2005-ui-redesign",
+  "title": "ui-redesign",
+  "status": "in_progress",
+  "phase": "04_gate",
+  "created": "2026-11-19T20:05:09+09:00",
+  "awaiting_human": false,
+  "question": "",
+  "memory_loaded": [
+    "W-0003",
+    "F-0014",
+    "P-0003",
+    "S-0001"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "critical": true,
+      "text": "画面を作り直しても、解析データ由来の文字列を HTML として挿入せず、参照する要素がすべてある（XSS・壊れた参照の防止）",
+      "risks": [
+        {
+          "id": "K1",
+          "text": "作り直しで innerHTML や存在しない要素の参照が入る",
+          "verifications": [
+            {
+              "id": "V1",
+              "method": "静的検査",
+              "command": "node --test web/tests/static.test.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "critical": true,
+      "text": "再生・コマ送り・骨格とフレームの対応・再生倍率の分離は変わらない（AC-010/011）",
+      "risks": [
+        {
+          "id": "K2",
+          "text": "作り直しでプレイヤーの対応が崩れる",
+          "verifications": [
+            {
+              "id": "V2",
+              "method": "プレイヤーの中核テスト",
+              "command": "node --test web/tests/player-core.test.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "critical": true,
+      "text": "一覧の API に解析の進み具合を足しても、既存のサーバーの振る舞い（セキュリティ・版・訂正）は変わらない",
+      "risks": [
+        {
+          "id": "K3",
+          "text": "一覧の変更でサーバーのテストが壊れる",
+          "verifications": [
+            {
+              "id": "V3",
+              "method": "サーバーの結合テスト",
+              "command": "python3 -m unittest tests.test_server"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "critical": false,
+      "text": "使いやすさ: ドロップで追加、必須だけを先に聞く、確かさと次にやることを先頭に、結果は4つの数字、接地はタイムラインで見て直す、地面は2点クリック。デスクトップ・スマホ幅・ダークで崩れない",
+      "risks": [
+        {
+          "id": "K4",
+          "text": "見た目の崩れ・横スクロール・操作できない部品",
+          "verifications": [
+            {
+              "id": "V4",
+              "method": "ブラウザで 1280px と 375px（ライト/ダーク）、一覧・追加・解析・修正・比較を確認。横スクロールなし",
+              "checks": [
+                "test-js"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "review": {
+    "done": false,
+    "blocking_findings": 0,
+    "summary": ""
+  },
+  "memory_done": false,
+  "fix_iterations": 0,
+  "gate": {
+    "ran_at": "2026-11-19T20:12:59+09:00",
+    "finished_epoch": 1795086779.3233714,
+    "stamp": "20261119-201214",
+    "checks_pass": true,
+    "results": {
+      "checks": {
+        "compile": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.36,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-check-compile.log"
+        },
+        "js-syntax": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.19,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-check-js-syntax.log"
+        },
+        "test": {
+          "pass": true,
+          "exit": 0,
+          "sec": 22.29,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-check-test.log"
+        },
+        "test-js": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.87,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-check-test-js.log"
+        },
+        "real-ffprobe": {
+          "pass": true,
+          "exit": 0,
+          "sec": 3.81,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-check-real-ffprobe.log"
+        }
+      },
+      "verifications": {
+        "V1": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.21,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-verify-V1.log"
+        },
+        "V2": {
+          "pass": true,
+          "exit": 0,
+          "sec": 0.79,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-verify-V2.log"
+        },
+        "V3": {
+          "pass": true,
+          "exit": 0,
+          "sec": 16.35,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-201214-verify-V3.log"
+        },
+        "V4": {
+          "pass": true,
+          "via_checks": [
+            "test-js"
+          ],
+          "missing_checks": []
+        }
+      }
+    }
+  },
+  "stop_blocks": 0
+}

@@ -241,8 +241,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, disciplines.catalog_json())
         if parts == ["videos"]:
             if method == "GET":
-                return self._json(200, {"videos": st.list_videos(q.get("q", ""), q.get("discipline", ""),
-                                                                  q.get("from", ""), q.get("to", ""), q.get("tag", ""))})
+                videos = st.list_videos(q.get("q", ""), q.get("discipline", ""), q.get("from", ""), q.get("to", ""),
+                                        q.get("tag", ""))
+                for v in videos:   # 一覧のカードに「解析中 42%」などを出すため
+                    j = st.latest_job(v["id"])
+                    v["job"] = {"state": j["state"], "progress": j["progress"]} if j else None
+                return self._json(200, {"videos": videos})
             if method == "POST":
                 self._check_write(need_json=False)
                 return self._upload()
