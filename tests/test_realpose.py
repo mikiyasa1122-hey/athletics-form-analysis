@@ -136,6 +136,28 @@ class TrackPeopleTest(unittest.TestCase):
         self.assertEqual(mark(fwd), [23])
         self.assertEqual(mark(back), [23])
 
+    def test_gap_right_before_seed_marks_seed_frame(self):
+        # 再レビュー: 選んだコマ 28 の直前 25〜27 で B が見えない → 印は欠けの後に最初に見えた 28 に付く
+        people, order = self.scene()
+        for i in (25, 26, 27):
+            people[i] = people[i][:1]
+        fwd, _ = track_people(people, order, seed=(5, 1))
+        back, _ = track_people(people, order, seed=(28, 1))
+        mark = lambda fr: [i for i in range(30) if "reacquired" in fr[i].flags]
+        self.assertEqual(mark(fwd), [28])
+        self.assertEqual(mark(back), [28])
+
+    def test_gap_right_after_seed_marks_first_frame_after_gap(self):
+        # 選んだコマ 5 の直後 6〜8 で B が見えない → 前向きでも後ろ向きでも、印は 9
+        people, order = self.scene()
+        for i in (6, 7, 8):
+            people[i] = people[i][:1]
+        fwd, _ = track_people(people, order, seed=(5, 1))
+        back, _ = track_people(people, order, seed=(20, 1))
+        mark = lambda fr: [i for i in range(30) if "reacquired" in fr[i].flags]
+        self.assertEqual(mark(fwd), [9])
+        self.assertEqual(mark(back), [9])
+
     def test_resolve_seed_by_position_not_order(self):
         # 再レビュー B3: 推論をやり直して検出の順番が変わっても、位置と大きさで同じ人を探す
         people, _ = self.scene()

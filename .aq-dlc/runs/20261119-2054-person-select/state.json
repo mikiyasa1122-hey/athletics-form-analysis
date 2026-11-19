@@ -5,7 +5,6 @@
   "phase": "05_fix",
   "created": "2026-11-19T20:54:50+09:00",
   "awaiting_human": false,
-  "question": "",
   "memory_loaded": [
     "P-0003",
     "F-0015",
@@ -266,5 +265,5 @@
       }
     }
   },
-  "stop_blocks": 0
+  "stop_blocks": 1
 }

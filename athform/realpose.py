@@ -294,6 +294,7 @@ def _track_pass(people_by_fid, order, min_conf, seed_idx: int | None, backward: 
                 raise PoseRunError("選んだ人の点が少なすぎて追えない。はっきり写っているコマで選ぶ")
             state.center, state.size = st
             out[fid] = (seed_idx, False, None)
+            last_seen = fid   # 選んだコマの直前（後ろ向き）で欠けたときも、印を選んだコマに付ける
             continue
         idx, reacq = choose_target(people, state, min_conf, dt)
         flag = None
@@ -354,6 +355,9 @@ def track_people(people_by_fid: dict[int, list[dict[str, Any]]], order: list[tup
         fwd = _track_pass(people_by_fid, order[pos:], min_conf, idx0)
         back = _track_pass(people_by_fid, list(reversed(order[:pos + 1])), min_conf, idx0, backward=True)
         result = {**back, **fwd}
+        # 選んだコマは両方向に含まれる。後ろ向きで付いた取り直しの印を、前向きの結果で消さない
+        i0, r0, f0 = fwd[fid0]
+        result[fid0] = (i0, r0 or back[fid0][1], f0)
     frames: dict[int, PoseFrame] = {}
     failed: list[int] = []
     for fid, _ in order:
