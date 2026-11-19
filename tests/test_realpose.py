@@ -64,6 +64,26 @@ class TrackingTest(unittest.TestCase):
             choose_target([], st, 0.3)
         self.assertEqual(choose_target([person(900, 300, 120)], st, 0.3), (0, True))
 
+    def test_recovery_after_short_loss_is_marked(self):
+        # 再レビュー B2(a): 数フレーム見失った後、元の位置の近くの同じ大きさの人を選んでも、別人の可能性があるので印を付ける
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3)
+        for _ in range(10):
+            choose_target([], st, 0.3)
+        self.assertEqual(choose_target([person(410, 300, 105)], st, 0.3), (0, True))
+
+    def test_neighbor_not_taken_at_high_fps(self):
+        # 再レビュー B2(b): 240fps で本人が検出されなかったフレームに、少し離れた隣の選手がいても乗り移らない
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3, dt=1 / 240)
+        self.assertEqual(choose_target([person(430, 305, 120)], st, 0.3, dt=1 / 240), (None, False))
+
+    def test_two_candidates_is_ambiguous(self):
+        st = TrackState()
+        choose_target([person(400, 300, 100)], st, 0.3)
+        self.assertEqual(choose_target([person(405, 300, 100), person(395, 302, 100)], st, 0.3), (None, False))
+        self.assertTrue(st.ambiguous)
+
 
 class MappingTest(unittest.TestCase):
     def test_halpe26_mapping_and_score_clip(self):
@@ -110,10 +130,12 @@ class GroundTest(unittest.TestCase):
         # レビュー B5: 自動推定の地面を信用できない理由（カメラの動き・小さい人物）を返す
         ok_cfg, ok = estimate_ground(self.frames())
         self.assertEqual(ok["problems"], [])
+        # カメラが選手を追う（パン）: 選手は画面のほぼ同じ位置にいて、地面の高さだけが時間とともに変わる
         drifting = {}
-        for i, pf in self.frames().items():   # 時間とともに地面が下がる（カメラが上を向いていく）
+        for i, pf in self.frames().items():
+            dx = 600.0 * i / 240          # 合成モデルの横移動を打ち消す（カメラが追いかけている）
             shift = 0.4 * i
-            drifting[i] = PoseFrame(i, {k: (None if v is None else Keypoint(v.x, v.y + shift, v.confidence))
+            drifting[i] = PoseFrame(i, {k: (None if v is None else Keypoint(v.x - dx, v.y + shift, v.confidence))
                                          for k, v in pf.keypoints.items()}, [])
         _, diag = estimate_ground(drifting)
         self.assertTrue(any("カメラが動いている" in p for p in diag["problems"]))
@@ -121,6 +143,14 @@ class GroundTest(unittest.TestCase):
                                   for k, v in pf.keypoints.items()}, []) for i, pf in self.frames().items()}
         _, diag = estimate_ground(small)
         self.assertTrue(any("人物が小さい" in p for p in diag["problems"]))
+
+    def test_fixed_tilted_camera_is_not_camera_motion(self):
+        # 再レビュー B1: 固定カメラで地面が少し傾いて写る（0.02〜0.05）だけでは「カメラが動いている」と言わない
+        for slope in (0.02, 0.05):
+            with self.subTest(slope=slope):
+                cfg, diag = estimate_ground(self.frames(slope=slope))
+                self.assertFalse(any("カメラが動いている" in p for p in diag["problems"]), diag["problems"])
+                self.assertAlmostEqual(cfg.ground_slope, slope, delta=0.01)
 
     def test_no_feet_raises(self):
         empty = {i: PoseFrame(i, {k: None for k in KEYPOINTS}, ["no_person"]) for i in range(50)}

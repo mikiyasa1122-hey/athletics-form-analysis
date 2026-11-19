@@ -260,13 +260,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"video": st.update_video(vid, validate_meta(self._read_json(), True))})
                 if method == "DELETE":
                     self._check_write(need_json=True)
-                    st.delete_video(vid)
+                    with app.video_lock(vid):
+                        st.delete_video(vid)
                     return self._json(200, {"deleted": vid})
             if rest == ["jobs"] and method == "POST":
                 self._check_write(need_json=True)
                 body = self._read_json()
-                return self._json(202, {"job": app.jobs.submit(vid, body.get("kind", "full"),
-                                                                body.get("mode", "performance"))})
+                with app.video_lock(vid):
+                    job = app.jobs.submit(vid, body.get("kind", "full"), body.get("mode", "performance"))
+                return self._json(202, {"job": job})
             if rest == ["analysis"] and method == "GET":
                 snap = st.get_analysis(vid, q.get("revision"))
                 if snap is None:
@@ -390,7 +392,11 @@ class Handler(BaseHTTPRequestHandler):
             updated[index]["revoked_at"] = now()
             updated[index]["revoked_reason"] = reason[:200]
             st.write_json(vid, "corrections.json", updated)
-            snap = app.jobs.analyze_video(vid)
+            try:
+                snap = app.jobs.analyze_video(vid)
+            except (CorrectionError, AnalysisError, ValueError):
+                st.write_json(vid, "corrections.json", existing)   # 記録と版が食い違わないよう元に戻す（再レビュー N6）
+                raise
         self._json(200, snap)
 
     def _compare(self, q: dict[str, str]) -> None:

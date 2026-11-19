@@ -15,7 +15,7 @@ from .events import Correction, DetectorConfig, EventLayers, detect_events
 from . import disciplines
 from .metrics import (CaptureConditions, MetricResult, apply_discipline_status, cadence, cap_for_preview, contact_times,
                       knee_angles, plausibility_findings, trunk_leans)
-from .pose import PoseAdapter, PoseFrame
+from .pose import UNOBSERVABLE_POSE_FLAGS, PoseAdapter, PoseFrame
 from .timebase import FrameIndex, downgrade_capture_time
 
 ALL_SOURCE_FRAMES = "all_source_frames"
@@ -100,8 +100,7 @@ def run_pose(inp: AnalysisInput) -> tuple[dict[int, PoseFrame], dict[str, Any]]:
         "analyzed_frame_count": len(poses),
         "pose_failed_frame_ids": failed,
         # 推定はしたが、対象の人物を検出できなかった・見失った・取り直したフレーム（レビュー N3）
-        "unobservable_frame_ids": [fid for fid, p in sorted(poses.items())
-                                   if {"no_person", "tracking_lost", "occluded"} & set(p.flags)],
+        "unobservable_frame_ids": [fid for fid, p in sorted(poses.items()) if UNOBSERVABLE_POSE_FLAGS & set(p.flags)],
         "reacquired_frame_ids": [fid for fid, p in sorted(poses.items()) if "reacquired" in p.flags],
         "skipped_by_sampling": total - len(selected),
     }
@@ -140,6 +139,13 @@ def analyze(inp: AnalysisInput, corrections: list[Correction] | None = None) -> 
     if inp.preview_reason:
         cap_for_preview(metrics, inp.preview_reason)
     apply_ground_quality(metrics, inp.ground_quality)
+    if layers.unapplied:
+        # 利用者が直したイベントが、自動検出の値に戻っている。確かな値として出さない（再レビュー N2）
+        from .metrics import REVIEW, UNAVAILABLE, worse  # noqa: PLC0415
+        for m in metrics:
+            if m.status != UNAVAILABLE:
+                m.status = worse(m.status, REVIEW)
+                m.reasons.append(f"適用できなかった手動訂正が {len(layers.unapplied)} 件ある（訂正の記録を確かめる）")
     if inp.index.decode_check != "packets":
         for m in metrics:
             m.limitations.append("パケット情報がなく、復号できなかったフレームの有無を確認できない")

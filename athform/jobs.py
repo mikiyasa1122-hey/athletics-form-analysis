@@ -211,6 +211,11 @@ class JobRunner:
         corrections = [Correction.from_json(c) for c in stored]
         inp = AnalysisInput(video["sha256"], index, StoredPoseAdapter(model, frames), detector, conditions,
                             strict_corrections=False, ground_quality=ground_quality)
+        tracking = str(model.config.get("tracking", ""))
+        if model.model_id.startswith("rtmlib") and not tracking.startswith("v2"):
+            # 範囲内のすり替わりを区切らない旧い追跡で推定した姿勢（再レビュー N3）
+            inp.ground_quality = dict(inp.ground_quality, problems=list(inp.ground_quality.get("problems", [])) + [
+                "旧い追跡方式で推定した姿勢（別人へのすり替わりを区切っていない）。「姿勢推定からやり直す」を実行する"])
         mode = str(model.config.get("mode", mode))   # 姿勢を推定したときのモードを使う
         if mode != "performance":
             inp.preview_reason = "軽量モデル（balanced）での解析。正式な計測には精度優先モードを使う"

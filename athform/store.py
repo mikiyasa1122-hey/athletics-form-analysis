@@ -19,7 +19,7 @@ import secrets
 import shutil
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 ID_RE = re.compile(r"^[a-z0-9]{12}$")
@@ -76,10 +76,34 @@ class Store:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.executescript(SCHEMA)
+            self._migrate_hash_named_analyses()
             # 前回の起動中に終わらなかったジョブは失敗として閉じる（孤児ジョブを残さない: ARCH-005）
             self._db.execute("UPDATE jobs SET state='failed', error='アプリの終了で中断された', updated_at=? "
                              "WHERE state IN ('queued','probing','inferring','analyzing','cancel_requested')", (now(),))
             self._db.commit()
+
+    def _migrate_hash_named_analyses(self) -> None:
+        """旧形式（analyses/<ハッシュ>.json、版の表なし）の最新の解析を、版 1 として登録する（再レビュー N3）。"""
+        rows = self._db.execute("SELECT id, latest_analysis FROM videos WHERE latest_analysis IS NOT NULL").fetchall()
+        for vid, latest in rows:
+            if not re.fullmatch(r"[0-9a-f]{64}", latest or ""):
+                continue
+            has = self._db.execute("SELECT 1 FROM analysis_versions WHERE video_id=?", (vid,)).fetchone()
+            src = os.path.join(self.root, "videos", vid, "analyses", f"{latest}.json")
+            dst = os.path.join(self.root, "videos", vid, "analyses", "r1.json")
+            if has or not os.path.isfile(src) or os.path.exists(dst):
+                continue
+            with open(src, encoding="utf-8") as fh:
+                snap = json.load(fh)
+            snap["revision"] = 1
+            snap.setdefault("ground_quality", {"method": "legacy", "problems": [
+                "旧形式の解析（地面の質・追跡の区切りの確認なし）。計算し直す"]})
+            with open(dst, "x", encoding="utf-8") as fh:
+                json.dump(snap, fh, ensure_ascii=False)
+            self._db.execute("INSERT INTO analysis_versions VALUES (?,?,?,?,?,?)",
+                             (vid, 1, latest, now(), "legacy", json.dumps(snap.get("model", {}), ensure_ascii=False)))
+            self._db.execute("UPDATE videos SET latest_analysis='1' WHERE id=?", (vid,))
+        self._db.commit()
 
     # ---------- パス ----------
     def video_dir(self, video_id: str) -> str:
@@ -156,7 +180,8 @@ class Store:
         with self._lock:
             if self._active_job(video_id):
                 # 解析中に消すと、ワーカーが書き続けて残骸が残る。先に取り消してもらう（レビュー B2）
-                raise Busy("解析中の動画は削除できない。解析を取り消してから削除する")
+                raise Busy("解析中の動画は削除できない。解析を取り消してから削除する"
+                           "（取り消しが終わらないときは、2分待つかアプリを再起動する）")
             self._db.execute("DELETE FROM videos WHERE id=?", (video_id,))
             self._db.execute("DELETE FROM analysis_versions WHERE video_id=?", (video_id,))
             self._db.execute("DELETE FROM jobs WHERE video_id=?", (video_id,))
@@ -166,6 +191,12 @@ class Store:
             raise StoreError("一部のファイルを削除できなかった（他のプログラムが開いている可能性）。もう一度削除する")
 
     def _active_job(self, video_id: str):
+        # 取り消しを頼んでから 2分たっても終わらないジョブ（取り消しを確かめない処理の中で止まっている）は
+        # 失敗として閉じ、削除や再実行が詰まらないようにする（再レビュー N4）
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(timespec="seconds")
+        self._db.execute("UPDATE jobs SET state='failed', error='取り消しが終わらなかったので閉じた', updated_at=? "
+                         "WHERE video_id=? AND state='cancel_requested' AND updated_at < ?", (now(), video_id, cutoff))
+        self._db.commit()
         return self._db.execute("SELECT id FROM jobs WHERE video_id=? AND state IN "
                                 "('queued','probing','inferring','analyzing','cancel_requested')", (video_id,)).fetchone()
 
@@ -211,6 +242,9 @@ class Store:
         with self._lock:
             row = self._db.execute("SELECT MAX(revision) FROM analysis_versions WHERE video_id=?", (video_id,)).fetchone()
             revision = (row[0] or 0) + 1
+            # 書き込みの後・登録の前に落ちて、ファイルだけ残った番号は飛ばす（再レビュー N1）
+            while os.path.exists(os.path.join(self.video_dir(video_id), "analyses", f"r{revision}.json")):
+                revision += 1
             snapshot["revision"] = revision
             self.write_json(video_id, f"analyses/r{revision}.json", snapshot, exclusive=True)
             self._db.execute("INSERT INTO analysis_versions VALUES (?,?,?,?,?,?)",
@@ -236,9 +270,7 @@ class Store:
     def add_job(self, video_id: str, kind: str, mode: str) -> dict[str, Any]:
         jid = new_id()
         with self._lock:
-            active = self._db.execute("SELECT id FROM jobs WHERE video_id=? AND state IN "
-                                      "('queued','probing','inferring','analyzing','cancel_requested')",
-                                      (video_id,)).fetchone()
+            active = self._active_job(video_id)
             if active:
                 raise Busy("この動画の解析はすでに実行中")   # 二重実行を防ぐ（ARCH-004）
             self._db.execute("INSERT INTO jobs (id, video_id, kind, mode, state, created_at, updated_at) "

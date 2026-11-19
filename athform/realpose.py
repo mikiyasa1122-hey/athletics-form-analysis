@@ -49,6 +49,8 @@ class TrackState:
     center: tuple[float, float] | None = None
     size: float | None = None
     lost: int = 0
+    since_seen: float = 0.0     # 最後に対象を見てからの秒数
+    ambiguous: bool = False     # 直前のフレームで、範囲内に2人以上いて決められなかった
 
 
 @dataclass
@@ -122,41 +124,50 @@ def _person_stats(kps, scores, thr: float) -> tuple[tuple[float, float], float] 
     return (cx, cy), size
 
 
-GATE = 0.6          # 前のフレームの位置から、体の大きさ×この倍率以内の人だけを同じ人とみなす
+SPEED_BODY_PER_S = 8.0   # 1秒あたりに動ける距離（体の大きさの倍数）。短距離のトップ選手でも画面上はこれ以下
+GATE_MIN, GATE_MAX = 0.15, 0.6   # 同じ人とみなす範囲（体の大きさの倍数）の下限と上限
 SIZE_RATIO = 1.5    # 体の大きさがこの比を超えて変わる人は別人とみなす
+REACQUIRE_AFTER_S = 0.5   # これだけ見失ったら、最も大きい人を選び直す（秒で決める: フレーム数だとFPSで意味が変わる）
 
 
-def choose_target(people, state: TrackState, thr: float, reacquire_after: int = 15) -> tuple[int | None, bool]:
-    """解析対象の人物を選ぶ（FR-POSE-002）。(選んだ人の番号, 取り直したか) を返す。
+def choose_target(people, state: TrackState, thr: float, dt: float = 1 / 30) -> tuple[int | None, bool]:
+    """解析対象の人物を選ぶ（FR-POSE-002）。(選んだ人の番号, 取り直したか) を返す。dt は前のフレームからの秒数。
 
-    - 最初は最も大きく映った人。以降は前の位置に近く、大きさも近い人。範囲は見失っても広げない（レビュー B4）
-    - reacquire_after フレーム続けて見失ったら、最も大きい人を選び直す。別人かもしれないので「取り直し」と印を付け、
-      解析ではそこで観測を区切る（同じ人として接地や指標をつながない）
+    - 最初は最も大きく映った人。以降は、最後に見た位置から「その間に動ける距離」以内で、大きさも近い人。
+      範囲は時間に比例し（高FPSでは狭い）、体の大きさの 0.6 倍を超えない（再レビュー B2）
+    - 範囲内に2人以上いるフレームは、どちらか決められないので選ばない（ambiguous）
+    - 1フレームでも見失った後に選んだら「取り直し」と印を付ける。隠れている間に別人に替わったかもしれないので、
+      解析ではそこで観測を区切る。REACQUIRE_AFTER_S 見失ったら、最も大きい人を選び直す（これも取り直し）
     """
+    state.ambiguous = False
+    state.since_seen = (state.since_seen or 0.0) + dt
     stats = [(_person_stats(k, s, thr), i) for i, (k, s) in enumerate(people)]
     stats = [(st, i) for st, i in stats if st is not None]
-    if not stats:
-        state.lost += 1
-        return None, False
     if state.center is None:
+        if not stats:
+            return None, False
         (center, size), idx = max(stats, key=lambda t: t[0][1])
-        state.center, state.size, state.lost = center, size, 0
+        state.center, state.size, state.lost, state.since_seen = center, size, 0, 0.0
         return idx, False
     prev_c, prev_s = state.center, state.size or 1.0
+    gate = min(GATE_MAX, max(GATE_MIN, SPEED_BODY_PER_S * state.since_seen)) * prev_s
 
     def same_person(t) -> bool:
         (c, sz), _ = t
-        close = math.hypot(c[0] - prev_c[0], c[1] - prev_c[1]) <= GATE * prev_s
-        return close and 1 / SIZE_RATIO <= sz / prev_s <= SIZE_RATIO
+        return math.hypot(c[0] - prev_c[0], c[1] - prev_c[1]) <= gate and 1 / SIZE_RATIO <= sz / prev_s <= SIZE_RATIO
     candidates = [t for t in stats if same_person(t)]
-    if candidates:
-        (center, size), idx = min(candidates, key=lambda t: math.hypot(t[0][0][0] - prev_c[0], t[0][0][1] - prev_c[1]))
-        state.center, state.size, state.lost = center, size, 0
-        return idx, False
+    if len(candidates) == 1:
+        (center, size), idx = candidates[0]
+        reacquired = state.lost > 0
+        state.center, state.size, state.lost, state.since_seen = center, size, 0, 0.0
+        return idx, reacquired
     state.lost += 1
-    if state.lost > reacquire_after:
+    if len(candidates) > 1:
+        state.ambiguous = True
+        return None, False
+    if stats and state.since_seen >= REACQUIRE_AFTER_S:
         (center, size), idx = max(stats, key=lambda t: t[0][1])
-        state.center, state.size, state.lost = center, size, 0
+        state.center, state.size, state.lost, state.since_seen = center, size, 0, 0.0
         return idx, True
     return None, False
 
@@ -185,7 +196,9 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
         model_id="rtmlib.BodyWithFeet(halpe26)",
         weights_version=f"{os.path.basename(cfg['det'])} + {os.path.basename(cfg['pose'])}",
         config={"mode": mode, "backend": "onnxruntime", "device": "cpu", "min_confidence": min_confidence,
-                "tracking": f"largest-first, nearest within {GATE}x body, size ratio <= {SIZE_RATIO}, reacquire marked"},
+                "tracking": (f"v2: largest-first; gate {SPEED_BODY_PER_S} body/s clamped {GATE_MIN}-{GATE_MAX}; "
+                             f"size ratio <= {SIZE_RATIO}; ambiguous skipped; any recovery after loss marked; "
+                             f"reselect after {REACQUIRE_AFTER_S}s")},
     )
     # 画像は一時フォルダに書き、枚数の照合が通ってから入れ替える。途中で失敗・取消しても、
     # 既存の版の画像（原本フレームIDで対応）を書き換えない（レビュー N5）
@@ -202,6 +215,7 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
     size = (0, 0)
     scale = 1.0
     count = 0   # 実際に取り出した枚数（0枚でも正しく数える）
+    t_prev = None
     try:
         for bmp in iter_bmp_frames(ffmpeg, video):
             if cancelled and cancelled():
@@ -222,9 +236,13 @@ def run_pose(ffmpeg: str, video: str, index: FrameIndex, out_dir: str, mode: str
                     fh.write(jpg.tobytes())
             kps, scores = model(img)
             people = list(zip(kps, scores)) if len(kps) else []
-            target, reacquired = choose_target(people, state, min_confidence)
+            t_now = index.frames[count].timestamp
+            dt = float(t_now - t_prev) if t_prev is not None else 0.0
+            t_prev = t_now
+            target, reacquired = choose_target(people, state, min_confidence, dt)
             if target is None:
-                pf = PoseFrame(fid, {name: None for name in KEYPOINTS}, ["tracking_lost"] if people else ["no_person"])
+                flag = "ambiguous" if state.ambiguous else ("tracking_lost" if people else "no_person")
+                pf = PoseFrame(fid, {name: None for name in KEYPOINTS}, [flag])
                 failed.append(fid)
             else:
                 pf = to_pose_frame(fid, *people[target])
@@ -252,7 +270,7 @@ def estimate_ground(frames: dict[int, PoseFrame], min_conf: float = 0.3) -> tupl
     カメラが大きく動く（パン・ズーム）動画では成り立たないので、推定の根拠を返し、画面で上書きできるようにする。
     """
     pts: list[tuple[float, float]] = []
-    lows_by_frame: list[tuple[int, float]] = []   # （原本フレームID, そのフレームで最も下の足）: 時間方向の変化を見る
+    lows_by_frame: list[tuple[int, float, float]] = []   # （原本フレームID, x, y）: 最も下の足。時間方向の変化を見る
     heights: list[float] = []
     for pf in frames.values():
         for side in ("left", "right"):
@@ -261,7 +279,7 @@ def estimate_ground(frames: dict[int, PoseFrame], min_conf: float = 0.3) -> tupl
             if feet:
                 low = max(feet, key=lambda p: p.y)
                 pts.append((low.x, low.y))
-                lows_by_frame.append((pf.source_frame_id, low.y))
+                lows_by_frame.append((pf.source_frame_id, low.x, low.y))
         sh = [pf.get(n, min_conf) for n in ("left_shoulder", "right_shoulder")]
         an = [pf.get(n, min_conf) for n in ("left_ankle", "right_ankle")]
         sh, an = [p for p in sh if p], [p for p in an if p]
@@ -301,7 +319,7 @@ def estimate_ground(frames: dict[int, PoseFrame], min_conf: float = 0.3) -> tupl
     # 線の高さは、接地とみなした点の中央値（外れ値に強い）
     y0 = median(y - slope * (x - x0) for x, y in use)
     cfg = DetectorConfig(ground_y=y0, contact_band_px=band, min_confidence=min_conf, ground_slope=slope, ground_x0=x0)
-    problems = ground_problems(lows_by_frame, len(use), slope, band, body)
+    problems = ground_problems(lows_by_frame, len(use), slope, band, body, x0)
     diag = {"method": "lower-envelope line fit", "envelope_points": len(env), "contact_points_used": len(use), "foot_points": len(pts),
             "median_body_height_px": round(body, 1), "slope_clamped_to": 0.2}
     diag["problems"] = problems
@@ -312,8 +330,8 @@ MIN_CONTACT_POINTS = 4
 MIN_BODY_PX = 120.0
 
 
-def ground_problems(lows_by_frame: list[tuple[int, float]], used: int, slope: float, band: float,
-                    body: float) -> list[str]:
+def ground_problems(lows_by_frame: list[tuple[int, float, float]], used: int, slope: float, band: float,
+                    body: float, x0: float = 0.0) -> list[str]:
     """自動推定した地面の線を信用できない理由（レビュー B5）。空なら問題なし。"""
     problems = []
     if used < MIN_CONTACT_POINTS:
@@ -322,7 +340,9 @@ def ground_problems(lows_by_frame: list[tuple[int, float]], used: int, slope: fl
         problems.append("傾きが上限に達した。カメラの傾き・動きが大きい可能性")
     if 0 < body < MIN_BODY_PX:
         problems.append(f"人物が小さい（体の高さ {body:.0f}px）。点の位置の誤差が大きくなる")
-    ordered = [y for _, y in sorted(lows_by_frame)]
+    # 推定した傾きを差し引いた高さで比べる。固定カメラで地面が少し傾いて写るだけで、
+    # 走者が画面を横切ると生の y は変わるので、それを「カメラの動き」と誤って判定しない（再レビュー B1）
+    ordered = [y - slope * (x - x0) for _, x, y in sorted(lows_by_frame)]
     if len(ordered) >= 20:
         half = len(ordered) // 2
 

@@ -273,6 +273,7 @@ class ServerTest(unittest.TestCase):
         snap3 = self.req("GET", f"/api/videos/{vid}/analysis")[1]
         self.assertEqual(len(snap3["events"]["unapplied_corrections"]), 1)
         self.assertEqual(snap3["ground_quality"]["method"], "user_override")
+
         # 取り消し: 記録は残り、取り消し日時と理由が付く
         s, snap4, _ = self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {"reason": "地面を直したので不要"})
         self.assertEqual(s, 200, snap4)
@@ -280,6 +281,11 @@ class ServerTest(unittest.TestCase):
         corrs = self.req("GET", f"/api/videos/{vid}")[1]["corrections"]
         self.assertEqual(len(corrs), 1)
         self.assertTrue(corrs[0]["revoked_at"])
+        # 取り消しも新しい版として残り、前の版は変わらない
+        versions = [v["revision"] for v in self.req("GET", f"/api/videos/{vid}")[1]["analyses"]]
+        self.assertEqual(versions[0], snap4["revision"])
+        self.assertGreater(snap4["revision"], snap3["revision"])
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/analysis?revision={snap3['revision']}")[1], snap3)
         self.assertEqual(self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {"reason": "x"})[0], 404)
         self.assertEqual(self.req("POST", f"/api/videos/{vid}/corrections/0/revoke", {})[0], 400)   # 理由が必要
 
@@ -321,6 +327,37 @@ class ServerTest(unittest.TestCase):
             time.sleep(0.05)
         snap2 = self.req("GET", f"/api/videos/{vid}/analysis")[1]
         self.assertTrue(any(m["status"] == "valid" for m in snap2["metrics"]))
+
+    def test_leftover_version_file_is_skipped(self):
+        # 再レビュー N1: 版のファイルだけ残っていても（登録の前に落ちた）、次の版の保存が詰まらない
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        with open(os.path.join(self.tmp.name, "videos", vid, "analyses", "r2.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        s, b, _ = self.req("POST", f"/api/videos/{vid}/jobs", {"kind": "reanalyze"})
+        for _ in range(200):
+            j = self.req("GET", f"/api/jobs/{b['job']['id']}")[1]["job"]
+            if j["state"] in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        self.assertEqual(j["state"], "completed", j)
+        self.assertEqual(self.req("GET", f"/api/videos/{vid}/analysis")[1]["revision"], 3)
+
+    def test_ground_problem_makes_metrics_review(self):
+        # 再レビュー N10: 地面の線に問題（人物が小さい）があると、指標は通しで要確認になる
+        def small_pose_fn(*args):
+            res = fake_pose_fn(*args)
+            for pf in res.frames.values():
+                pf.keypoints = {k: (None if v is None else Keypoint(v.x * 0.15, v.y * 0.15, v.confidence))
+                                for k, v in pf.keypoints.items()}
+            return res
+        self.srv.app.jobs.pose_fn = small_pose_fn
+        vid = self.upload()[1]["video"]["id"]
+        self.analyze(vid)
+        snap = self.req("GET", f"/api/videos/{vid}/analysis")[1]
+        self.assertTrue(any("人物が小さい" in p for p in snap["ground_quality"]["problems"]))
+        for m in snap["metrics"]:
+            self.assertNotIn(m["status"], ("valid", "estimated"))
 
     def test_input_hardening(self):
         # レビュー N6・N7・N9

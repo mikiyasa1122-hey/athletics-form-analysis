@@ -323,7 +323,8 @@
     const ul = $("corrections-list");
     clear(ul);
     const unapplied = new Map(((model.snapshot.events || {}).unapplied_corrections || []).map((u) => [u.index, u.reason]));
-    const list = current.corrections || [];
+    // 最新の版では保存中の訂正（取り消しボタン付き）、過去の版ではその版を作ったときの訂正を表示する（再レビュー N5）
+    const list = viewingLatest ? (current.corrections || []) : ((model.snapshot.events || {}).corrections || []);
     const label = { move: "移動", add: "追加", delete: "削除" };
     list.forEach((c, i) => {
       const li = node("li");

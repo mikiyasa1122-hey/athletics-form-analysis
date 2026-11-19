@@ -24,7 +24,7 @@ KEYPOINTS = (
 
 
 # 点が出ていても、このフラグのフレームは観測として扱わない
-UNOBSERVABLE_POSE_FLAGS = frozenset({"occluded", "tracking_lost", "no_person"})
+UNOBSERVABLE_POSE_FLAGS = frozenset({"occluded", "tracking_lost", "no_person", "ambiguous"})
 
 
 class PoseInputError(ValueError):
