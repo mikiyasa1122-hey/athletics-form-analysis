@@ -185,6 +185,15 @@
     return d.ground_y + (d.ground_slope || 0) * (x - (d.ground_x0 || 0));
   }
 
+  const STATUS_RANK = Object.freeze({ valid: 0, estimated: 1, review_required: 2, unavailable: 3 });
+
+  /** 解析全体の確かさ。出せた値のうち、いちばん弱い状態で決める（一部でも要確認なら「確定」とは言わない）。 */
+  function overallStatus(metrics) {
+    const usable = (metrics || []).filter((m) => m.status !== "unavailable");
+    if (!usable.length) return "unavailable";
+    return usable.reduce((a, m) => (STATUS_RANK[m.status] > STATUS_RANK[a] ? m.status : a), "valid");
+  }
+
   function eventsAtFrame(model, frameId) {
     return model.events.filter((e) => (e.source_frame_ids || []).includes(frameId));
   }
@@ -224,6 +233,7 @@
     loopAroundEvent: loopAroundEvent,
     clearLoop: clearLoop,
     eventsAtFrame: eventsAtFrame,
+    overallStatus: overallStatus,
     frameImageUrl: frameImageUrl,
     imageSize: imageSize,
     prefetchIds: prefetchIds,

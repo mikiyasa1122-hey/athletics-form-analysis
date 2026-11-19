@@ -138,11 +138,14 @@ class ServerTest(unittest.TestCase):
         # 一覧・検索
         s, b, _ = self.req("GET", "/api/videos?tag=" + urllib.parse.quote("加速"))
         self.assertEqual([v["id"] for v in b["videos"]], [vid])
+        self.assertIsNone(b["videos"][0]["job"])   # まだ解析していない
         s, b, _ = self.req("GET", "/api/videos?discipline=long_jump")
         self.assertEqual(b["videos"], [])
         # 解析
         job = self.analyze(vid)
         self.assertEqual(job["state"], "completed", job)
+        listed = self.req("GET", "/api/videos")[1]["videos"][0]["job"]   # 一覧のカードに出す解析の状態
+        self.assertEqual((listed["state"], listed["progress"]), ("completed", 1.0))
         s, snap, _ = self.req("GET", f"/api/videos/{vid}/analysis")
         self.assertEqual(s, 200)
         self.assertEqual(snap["capture_quality"]["capture_time_status"], "verified")

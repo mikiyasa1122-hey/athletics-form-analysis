@@ -111,6 +111,10 @@
     if (isNaN(d)) return s;
     return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
   }
+  function localDate(d) {
+    const z = (n) => (n < 10 ? "0" : "") + n;
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+  }
   function fmtClock(t) {
     if (typeof t !== "number" || !isFinite(t)) return "—";
     const m = Math.floor(t / 60), s = t - m * 60;
@@ -189,7 +193,7 @@
     $("up-name").textContent = f.name + "（" + (f.size / 1048576).toFixed(1) + " MB）";
     if (!$("up-date").value) {
       const d = f.lastModified ? new Date(f.lastModified) : new Date();
-      $("up-date").value = d.toISOString().slice(0, 10);
+      $("up-date").value = localDate(d);
     }
     $("up-discipline").focus();
   }
@@ -251,7 +255,9 @@
       list.appendChild(a);
     }
     stopPolling();
-    if (anyRunning && !$("view-home").hidden) pollTimer = setTimeout(refreshList, 3000);
+    if (anyRunning && !$("view-home").hidden) {
+      pollTimer = setTimeout(() => refreshList().catch(() => { pollTimer = setTimeout(refreshList, 6000); }), 3000);
+    }
   }
 
   function upload() {
@@ -330,6 +336,7 @@
       if ($("view-video").hidden || !model) return;
       const t = ev.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;
+      if (ev.key === " " && t instanceof Element && t.closest("button, summary, a")) return;
       if (ev.key === "ArrowRight") { ev.preventDefault(); stepBy(ev.shiftKey ? 10 : 1); }
       else if (ev.key === "ArrowLeft") { ev.preventDefault(); stepBy(ev.shiftKey ? -10 : -1); }
       else if (ev.key === " ") { ev.preventDefault(); togglePlay(); }
@@ -343,7 +350,7 @@
       if (!model) return;
       const rect = tl.getBoundingClientRect();
       const x = ev.clientX - rect.left;
-      if (select) {
+      if (select && editing) {
         const hit = eventAt(x, ev.clientY - rect.top, rect.width);
         if (hit) { selectEvent(hit.event_id, true); return; }
       }
@@ -368,14 +375,7 @@
     $("delete-video").addEventListener("click", () => { closeMenu(); deleteVideo(); });
 
     // 修正
-    $("edit-toggle").addEventListener("click", () => {
-      editing = !editing;
-      $("edit-toggle").setAttribute("aria-pressed", String(editing));
-      $("edit-toggle").textContent = editing ? "修正を終える" : "修正する";
-      $("edit-panel").hidden = !editing;
-      renderInspector();
-      renderTimeline();
-    });
+    $("edit-toggle").addEventListener("click", () => setEditing(!editing));
     for (const r of ["映像で確認した", "隠れていて誤検出", "地面の線のずれ", "別の人を検出"]) {
       $("reason-chips").appendChild(button(r, () => { $("c-reason").value = r; $("c-reason").focus(); }));
     }
@@ -385,8 +385,21 @@
     $("c-add-off-left").addEventListener("click", add("toe_off", "left"));
     $("c-add-off-right").addEventListener("click", add("toe_off", "right"));
 
-    // 地面の指定（2点）
+    // 地面の指定（2点）・自動推定に戻す
     $("stage").addEventListener("click", onStageClick);
+    $("ground-pick").addEventListener("click", startPick);
+    $("ground-reset").addEventListener("click", () => {
+      if (confirm("自分で決めた地面の線をやめて、自動推定に戻します。計算し直します。")) saveGround(null);
+    });
+  }
+
+  function setEditing(on) {
+    editing = on;
+    $("edit-toggle").setAttribute("aria-pressed", String(on));
+    $("edit-toggle").textContent = on ? "修正を終える" : "修正する";
+    $("edit-panel").hidden = !on;
+    if (!on) selectedEvent = null;
+    if (model) { renderInspector(); renderTimeline(); }
   }
 
   function closeMenu() { for (const d of document.querySelectorAll("details.menu")) d.open = false; }
@@ -400,10 +413,7 @@
     $("export-link").href = "/api/videos/" + id + "/export";
     fillMeta(v);
     renderHistory();
-    editing = false;
-    $("edit-toggle").setAttribute("aria-pressed", "false");
-    $("edit-toggle").textContent = "修正する";
-    $("edit-panel").hidden = true;
+    setEditing(false);
     $("version-note").hidden = true;
     await loadAnalysis();
     showJob();
@@ -455,9 +465,18 @@
     if (s.capture_conditions.discipline !== v.discipline || (s.capture_conditions.camera_view || "") !== (v.camera_view || "")) {
       notes.push("動画の情報が、この解析をしたときから変わっています。「動画の情報を変える」から計算し直してください。");
     }
+    const j = current.job;
+    if (viewingLatest && j && j.state === "failed") {
+      notes.push("最後の計算し直しはうまくいきませんでした" + (j.error ? "（" + j.error + "）" : "") + "。表示しているのはその前の結果です。");
+    } else if (viewingLatest && j && j.state === "cancelled") {
+      notes.push("最後の計算し直しは取り消されました。表示しているのはその前の結果です。");
+    }
     $("version-note").textContent = notes.join(" ");
     $("version-note").hidden = !notes.length;
     $("edit-toggle").disabled = !viewingLatest;
+    if (!viewingLatest && editing) setEditing(false);
+    $("ground-pick").disabled = !viewingLatest;
+    $("ground-reset").hidden = !(viewingLatest && s.ground_quality && s.ground_quality.method === "user_override");
   }
 
   function renderHistory() {
@@ -481,7 +500,9 @@
     const gq = s.ground_quality || {};
     const q = s.capture_quality || {};
     const usable = model.metrics.filter((m) => m.status !== "unavailable");
-    const best = usable.length ? usable.reduce((a, m) => (RANK[m.status] < RANK[a] ? m.status : a), "unavailable") : "unavailable";
+    // いちばん弱い状態で決める（一部でも要確認なら「確定」とは言わない）
+    const worst = PC.overallStatus(model.metrics);
+    const reviewNames = METRICS.filter(([id]) => usable.some((m) => m.metric_id === id && m.status === "review_required")).map(([, n]) => n);
     let level, title, text;
     const reasons = [];
     const actions = [];
@@ -498,17 +519,19 @@
     } else if (!usable.length) {
       level = "unavailable"; title = "この動画では値を出せませんでした";
       text = "下の理由を確かめてください。横から、カメラを固定して全身が映る動画だと測りやすくなります。";
-    } else if (best === "valid") {
+    } else if (worst === "valid") {
       level = "valid"; title = "確定した値です";
-      text = "地面の線を指定済みで、品質の確認も通っています。";
-    } else if (gq.method === "auto" && !(gq.problems || []).length && !reasons.length) {
+      text = "地面の線を指定済みで、すべての値が品質の確認を通っています。";
+    } else if (worst === "estimated" && gq.method === "auto" && !(gq.problems || []).length && !reasons.length) {
       level = "estimated"; title = "おおよその値です";
       text = "地面の位置を自動で推定しています。映像で地面を2点クリックして決めると、値が確定します。";
-      actions.push(button("地面を指定する", startPick, "primary"));
+      if (viewingLatest) actions.push(button("地面を指定する", startPick, "primary"));
     } else {
       level = "review_required"; title = "確かめが必要です";
-      text = "次の理由で、値はそのまま使えません。";
-      if (gq.method !== "user_override") actions.push(button("地面を指定する", startPick, "quiet"));
+      text = reviewNames.length ? reviewNames.join("・") + " は、そのまま使えません。" : "次の理由で、値はそのまま使えません。";
+      const own = mostCommonList(usable.filter((m) => m.status === "review_required").flatMap((m) => m.reasons || []).map(plainReason), 3);
+      for (const r of own) if (!reasons.includes(r)) reasons.push(r);
+      if (gq.method !== "user_override" && viewingLatest) actions.push(button("地面を指定する", startPick, "quiet"));
     }
     box.className = "trust lv-" + level;
     const head = node("div", null, "trust-head");
@@ -531,6 +554,11 @@
   // ---------- 結果（4つの数字） ----------
   let expandedMetric = null;
   function median(xs) { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; }
+  function mostCommonList(xs, k) {
+    const c = new Map();
+    for (const x of xs) c.set(x, (c.get(x) || 0) + 1);
+    return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([x]) => x);
+  }
   function mostCommon(xs) {
     const c = new Map();
     for (const x of xs) c.set(x, (c.get(x) || 0) + 1);
@@ -544,39 +572,51 @@
     clear(box);
     for (const [id, name, unit] of METRICS) {
       const ms = model.metrics.filter((m) => m.metric_id === id);
-      const withValue = ms.filter((m) => m.value !== null && m.value !== undefined && m.status !== "unavailable");
-      const card = node("button", null, "metric");
-      card.type = "button";
+      const has = (m) => m.value !== null && m.value !== undefined && m.status !== "unavailable";
+      // 中央値は「確定・推定」の値だけで出す（比較と同じ）。要確認しかないときだけ、それを要確認として出す
+      const usable = ms.filter((m) => has(m) && (m.status === "valid" || m.status === "estimated"));
+      const review = ms.filter((m) => has(m) && m.status === "review_required");
+      const shown = usable.length ? usable : review;
+      const card = node("div", null, "metric");
       card.setAttribute("aria-expanded", String(expandedMetric === id));
-      card.appendChild(node("span", name, "metric-name"));
-      if (withValue.length) {
-        const vals = withValue.map((m) => m.value);
+      const head = node("button", null, "metric-toggle");
+      head.type = "button";
+      head.setAttribute("aria-expanded", String(expandedMetric === id));
+      head.appendChild(node("span", name, "metric-name"));
+      if (shown.length) {
+        const vals = shown.map((m) => m.value);
         const med = median(vals);
-        const digits = unit === "°" ? 0 : (unit === "s" ? (Math.max(...withValue.map((m) => m.interval ? (m.interval.upper - m.interval.lower) / 2 : 0)) >= 0.005 ? 2 : 3) : 2);
-        const val = node("span", (unit === "s" ? med.toFixed(digits) : unit === "°" ? Math.round(med) : med.toFixed(digits)), "metric-value");
+        const wide = Math.max(...shown.map((m) => (m.interval ? (m.interval.upper - m.interval.lower) / 2 : 0)));
+        const digits = unit === "°" ? 0 : unit === "s" ? (wide >= 0.005 ? 2 : 3) : 2;
+        const val = node("span", unit === "°" ? String(Math.round(med)) : med.toFixed(digits), "metric-value");
         val.appendChild(node("small", unit));
-        card.appendChild(val);
-        const ivs = withValue.filter((m) => m.interval);
+        head.appendChild(val);
+        const ivs = shown.filter((m) => m.interval);
         if (ivs.length) {
           const lo = Math.min(...ivs.map((m) => m.interval.lower)), hi = Math.max(...ivs.map((m) => m.interval.upper));
-          card.appendChild(node("span", "幅 " + lo.toFixed(digits) + "〜" + hi.toFixed(digits) + unit + "（" + withValue.length + "回分）", "metric-range"));
+          head.appendChild(node("span", "幅 " + lo.toFixed(digits) + "〜" + hi.toFixed(digits) + unit + "（" + shown.length + "回分）", "metric-range"));
         } else {
-          card.appendChild(node("span", withValue.length + "回分の中央値", "metric-range"));
+          head.appendChild(node("span", shown.length + "回分の中央値", "metric-range"));
         }
-        const st = withValue.reduce((a, m) => (RANK[m.status] > RANK[a] ? m.status : a), "valid");
-        card.appendChild(node("span", STATE[st], "state state-" + st));
+        const st = shown.reduce((a, m) => (RANK[m.status] > RANK[a] ? m.status : a), "valid");
+        head.appendChild(node("span", STATE[st], "state state-" + st));
+        if (usable.length && review.length) head.appendChild(node("span", "要確認の " + review.length + " 回は除いています", "metric-why"));
+        else if (!usable.length) {
+          const why = mostCommon(review.flatMap((m) => m.reasons || []));
+          if (why) head.appendChild(node("span", plainReason(why), "metric-why"));
+        }
       } else {
-        card.appendChild(node("span", "—", "metric-value none"));
-        card.appendChild(node("span", STATE.unavailable, "state state-unavailable"));
+        head.appendChild(node("span", "—", "metric-value none"));
+        head.appendChild(node("span", STATE.unavailable, "state state-unavailable"));
         const why = mostCommon(ms.flatMap((m) => m.reasons || []));
-        if (why) card.appendChild(node("span", plainReason(why), "metric-why"));
+        if (why) head.appendChild(node("span", plainReason(why), "metric-why"));
       }
-      if (expandedMetric === id) card.appendChild(metricDetail(ms, unit));
-      card.addEventListener("click", (ev) => {
-        if (ev.target.closest(".metric-detail")) return;
+      head.addEventListener("click", () => {
         expandedMetric = expandedMetric === id ? null : id;
         renderSummary();
       });
+      card.appendChild(head);
+      if (expandedMetric === id) card.appendChild(metricDetail(ms, unit));
       box.appendChild(card);
     }
     $("feedback-text").textContent = "フォームの良し悪しの判定・改善の提案は、専門家が確かめた基準がまだないため出していません。";
@@ -584,6 +624,7 @@
 
   /** 内部向けの理由を、利用者向けに短くする。 */
   function plainReason(r) {
+    r = String(r).replace(/^(地面の線|姿勢推定): /, "");   // 先頭の欄の理由と重ならないように、出どころの見出しを外す
     if (/実時間|slowmo|capture_time/.test(r)) return "撮影したときの時間が分からない";
     if (/3回未満/.test(r)) return "続けて見えた接地が少ない";
     if (/対応する離地/.test(r)) return "離地が見えていない";
@@ -604,9 +645,9 @@
       b.appendChild(node("span", m.side === "left" ? "左" : m.side === "right" ? "右" : "—", m.side === "left" ? "side-l" : m.side === "right" ? "side-r" : ""));
       b.appendChild(node("span", m.value === null || m.value === undefined ? (m.reasons[0] ? plainReason(m.reasons[0]) : "—") : m.display));
       b.appendChild(node("span", STATE[m.status], "state state-" + m.status));
-      b.title = [...(m.reasons || []), ...(m.limitations || [])].join("\n");
       if (target !== undefined && model.positionById.has(target)) b.addEventListener("click", () => seekFrame(target));
       else b.disabled = true;
+      if (m.status !== "valid" && (m.reasons || []).length) b.appendChild(node("span", m.reasons.map(plainReason).join("・"), "why-line"));
       box.appendChild(b);
     }
     return box;
@@ -635,8 +676,15 @@
     clear(box);
     if (!editing || !model) return;
     const e = selectedEvent && model.events.find((x) => x.event_id === selectedEvent);
+    const nav = node("div", null, "ev-nav");
+    const order = model.events.slice().sort((a, b) => a.event_time_sec - b.event_time_sec);
+    const idx = e ? order.findIndex((x) => x.event_id === e.event_id) : -1;
+    nav.appendChild(button("◀ 前の印", () => { const t = order[idx > 0 ? idx - 1 : order.length - 1]; if (t) selectEvent(t.event_id, true); }, "quiet small-btn"));
+    nav.appendChild(button("次の印 ▶", () => { const t = order[idx >= 0 && idx < order.length - 1 ? idx + 1 : 0]; if (t) selectEvent(t.event_id, true); }, "quiet small-btn"));
+    nav.appendChild(node("span", order.length ? (idx >= 0 ? (idx + 1) + " / " + order.length : order.length + " 個の印") : "印がありません", "muted small"));
+    box.appendChild(nav);
     if (!e) {
-      box.appendChild(node("p", "直したい印をタイムラインで選んでください。", "muted small"));
+      box.appendChild(node("p", "直したい印を、タイムラインか「前の印・次の印」で選んでください。", "muted small"));
       return;
     }
     const kind = (e.side === "left" ? "左足の" : "右足の") + (e.event_type === "foot_contact" ? "接地" : "離地");
@@ -703,7 +751,8 @@
   }
 
   async function revokeCorrection(i) {
-    const reason = $("c-reason").value.trim() || "取り消し";
+    const reason = (window.prompt("この修正を取り消す理由（記録に残ります）", "") || "").trim();
+    if (!reason) return;
     try {
       const snap = await api("POST", "/api/videos/" + current.video.id + "/corrections/" + i + "/revoke", { reason: reason });
       await afterCorrection(snap);
@@ -714,7 +763,8 @@
   // ---------- 地面の指定（映像を2点クリック） ----------
   let pick = null;   // null / [] / [{x,y}]
   function startPick() {
-    if (!model || !viewingLatest) return;
+    if (!model) return;
+    if (!viewingLatest) { toast("前の版を見ているときは、地面を指定できません"); return; }
     pick = [];
     $("stage").classList.add("picking");
     $("pick-hint").textContent = "地面（足が着く線）の上を、左寄りで1回クリックしてください。Esc でやめる";
@@ -1133,8 +1183,9 @@
         const [n, u] = name[row.metric_id] || [row.metric_id, ""];
         const card = node("div", null, "cmp-row");
         card.appendChild(node("strong", n));
-        const a = node("div"); a.appendChild(node("div", fmt(row.a, u), "v")); a.appendChild(node("div", row.a ? "A ・ " + row.a.n + "回分" : "A", "n")); card.appendChild(a);
-        const b = node("div"); b.appendChild(node("div", fmt(row.b, u), "v")); b.appendChild(node("div", row.b ? "B ・ " + row.b.n + "回分" : "B", "n")); card.appendChild(b);
+        const cnt = (x, tag) => (x ? tag + " ・ " + x.n + "回分" + (x.excluded ? "（要確認など " + x.excluded + " 回を除外）" : "") : tag);
+        const a = node("div"); a.appendChild(node("div", fmt(row.a, u), "v")); a.appendChild(node("div", cnt(row.a, "A"), "n")); card.appendChild(a);
+        const b = node("div"); b.appendChild(node("div", fmt(row.b, u), "v")); b.appendChild(node("div", cnt(row.b, "B"), "n")); card.appendChild(b);
         const d = node("div"); d.appendChild(node("div", row.diff === null ? "—" : (row.diff > 0 ? "+" : "") + (+row.diff.toFixed(u === "°" ? 1 : 3)) + u, "v")); d.appendChild(node("div", "B − A", "n")); card.appendChild(d);
         card.appendChild(node("div", row.note, "note"));
         $("cmp-body").appendChild(card);

@@ -151,3 +151,12 @@ test("指標の根拠フレームはすべて移動できる（FR-SINGLE-003）"
     }
   }
 });
+
+test("解析全体の確かさは、出せた値のうちいちばん弱い状態で決まる（一部の要確認を確定と言わない）", () => {
+  const m = (status) => ({ status: status });
+  assert.equal(PC.overallStatus([m("valid"), m("valid")]), "valid");
+  assert.equal(PC.overallStatus([m("valid"), m("review_required"), m("unavailable")]), "review_required");
+  assert.equal(PC.overallStatus([m("valid"), m("estimated")]), "estimated");
+  assert.equal(PC.overallStatus([m("unavailable")]), "unavailable");
+  assert.equal(PC.overallStatus([]), "unavailable");
+});
