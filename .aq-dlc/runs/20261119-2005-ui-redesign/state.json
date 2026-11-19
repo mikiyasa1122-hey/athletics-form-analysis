@@ -1,8 +1,8 @@
 {
   "run_id": "20261119-2005-ui-redesign",
   "title": "ui-redesign",
-  "status": "in_progress",
-  "phase": "05_fix",
+  "status": "complete",
+  "phase": "done",
   "created": "2026-11-19T20:05:09+09:00",
   "awaiting_human": false,
   "question": "",
@@ -90,67 +90,67 @@
   ],
   "review": {
     "done": true,
-    "blocking_findings": 2,
-    "summary": "B1 地面の再指定・自動に戻すの入口が消えた, B2 先頭の確かさが一部の要確認を無視して確定と出る。N1-N13"
+    "blocking_findings": 0,
+    "summary": "再レビュー pass（blocking 0 / non-blocking 6）。N1 フォーカス, N2 失敗表示, N3 リセットの条件, N4 言い方, N5 空の理由, N6 種目必須 にも対応済み"
   },
-  "memory_done": false,
+  "memory_done": true,
   "fix_iterations": 1,
   "gate": {
-    "ran_at": "2026-11-19T20:21:27+09:00",
-    "finished_epoch": 1795087287.5724266,
-    "stamp": "20261119-202042",
+    "ran_at": "2026-11-19T20:25:07+09:00",
+    "finished_epoch": 1795087507.02032,
+    "stamp": "20261119-202422",
     "checks_pass": true,
     "results": {
       "checks": {
         "compile": {
           "pass": true,
           "exit": 0,
-          "sec": 0.36,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-check-compile.log"
+          "sec": 0.34,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-check-compile.log"
         },
         "js-syntax": {
           "pass": true,
           "exit": 0,
           "sec": 0.18,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-check-js-syntax.log"
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-check-js-syntax.log"
         },
         "test": {
           "pass": true,
           "exit": 0,
-          "sec": 22.6,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-check-test.log"
+          "sec": 22.04,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-check-test.log"
         },
         "test-js": {
           "pass": true,
           "exit": 0,
-          "sec": 0.87,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-check-test-js.log"
+          "sec": 0.85,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-check-test-js.log"
         },
         "real-ffprobe": {
           "pass": true,
           "exit": 0,
-          "sec": 3.93,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-check-real-ffprobe.log"
+          "sec": 3.88,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-check-real-ffprobe.log"
         }
       },
       "verifications": {
         "V1": {
           "pass": true,
           "exit": 0,
-          "sec": 0.22,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-verify-V1.log"
+          "sec": 0.21,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-verify-V1.log"
         },
         "V2": {
           "pass": true,
           "exit": 0,
-          "sec": 0.81,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-verify-V2.log"
+          "sec": 0.8,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-verify-V2.log"
         },
         "V3": {
           "pass": true,
           "exit": 0,
-          "sec": 16.37,
-          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202042-verify-V3.log"
+          "sec": 16.41,
+          "log": ".aq-dlc\\runs\\20261119-2005-ui-redesign\\gate\\20261119-202422-verify-V3.log"
         },
         "V4": {
           "pass": true,

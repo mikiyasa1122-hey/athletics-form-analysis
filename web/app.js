@@ -153,6 +153,11 @@
     if (homeReady) return;
     homeReady = true;
     fillDisciplines($("up-discipline"), false);
+    const pickOne = node("option", "種目を選んでください");
+    pickOne.value = "";
+    pickOne.disabled = true;
+    $("up-discipline").insertBefore(pickOne, $("up-discipline").firstChild);
+    $("up-discipline").value = "";
     fillDisciplines($("f-discipline"), true);
     wireSeg("up-direction");
     wireSeg("up-view");
@@ -201,6 +206,7 @@
   function resetUpload() {
     pickedFile = null;
     $("upload-form").reset();
+    $("up-discipline").value = "";
     setSeg("up-direction", "left_to_right");
     setSeg("up-view", "side");
     $("upload-form").hidden = true;
@@ -466,9 +472,11 @@
       notes.push("動画の情報が、この解析をしたときから変わっています。「動画の情報を変える」から計算し直してください。");
     }
     const j = current.job;
-    if (viewingLatest && j && j.state === "failed") {
+    const latestAt = current.analyses.length ? current.analyses[0].created_at : "";
+    const jobIsNewer = j && (!latestAt || (j.updated_at || "") > latestAt);
+    if (viewingLatest && jobIsNewer && j.state === "failed") {
       notes.push("最後の計算し直しはうまくいきませんでした" + (j.error ? "（" + j.error + "）" : "") + "。表示しているのはその前の結果です。");
-    } else if (viewingLatest && j && j.state === "cancelled") {
+    } else if (viewingLatest && jobIsNewer && j.state === "cancelled") {
       notes.push("最後の計算し直しは取り消されました。表示しているのはその前の結果です。");
     }
     $("version-note").textContent = notes.join(" ");
@@ -476,7 +484,7 @@
     $("edit-toggle").disabled = !viewingLatest;
     if (!viewingLatest && editing) setEditing(false);
     $("ground-pick").disabled = !viewingLatest;
-    $("ground-reset").hidden = !(viewingLatest && s.ground_quality && s.ground_quality.method === "user_override");
+    $("ground-reset").hidden = !(viewingLatest && current.video.ground_override);
   }
 
   function renderHistory() {
@@ -502,7 +510,12 @@
     const usable = model.metrics.filter((m) => m.status !== "unavailable");
     // いちばん弱い状態で決める（一部でも要確認なら「確定」とは言わない）
     const worst = PC.overallStatus(model.metrics);
-    const reviewNames = METRICS.filter(([id]) => usable.some((m) => m.metric_id === id && m.status === "review_required")).map(([, n]) => n);
+    const reviewNames = METRICS.map(([id, n]) => {
+      const all = usable.filter((m) => m.metric_id === id);
+      const rv = all.filter((m) => m.status === "review_required").length;
+      if (!rv) return null;
+      return rv === all.length ? n : n + "の一部（" + rv + "/" + all.length + " 回）";
+    }).filter(Boolean);
     let level, title, text;
     const reasons = [];
     const actions = [];
@@ -528,9 +541,13 @@
       if (viewingLatest) actions.push(button("地面を指定する", startPick, "primary"));
     } else {
       level = "review_required"; title = "確かめが必要です";
-      text = reviewNames.length ? reviewNames.join("・") + " は、そのまま使えません。" : "次の理由で、値はそのまま使えません。";
+      text = reviewNames.length ? reviewNames.join("・") + " は、確かめが必要です。" : "次の理由で、値はまだ確定できません。";
       const own = mostCommonList(usable.filter((m) => m.status === "review_required").flatMap((m) => m.reasons || []).map(plainReason), 3);
       for (const r of own) if (!reasons.includes(r)) reasons.push(r);
+      if (!reasons.length) {
+        const lim = mostCommonList(usable.filter((m) => m.status === "estimated").flatMap((m) => m.limitations || []).map(plainReason), 3);
+        for (const r of lim) reasons.push(r);
+      }
       if (gq.method !== "user_override" && viewingLatest) actions.push(button("地面を指定する", startPick, "quiet"));
     }
     box.className = "trust lv-" + level;
@@ -611,9 +628,12 @@
         const why = mostCommon(ms.flatMap((m) => m.reasons || []));
         if (why) head.appendChild(node("span", plainReason(why), "metric-why"));
       }
+      head.dataset.metric = id;
       head.addEventListener("click", () => {
         expandedMetric = expandedMetric === id ? null : id;
         renderSummary();
+        const again = $("summary").querySelector('[data-metric="' + id + '"]');
+        if (again) again.focus();
       });
       card.appendChild(head);
       if (expandedMetric === id) card.appendChild(metricDetail(ms, unit));
@@ -679,8 +699,13 @@
     const nav = node("div", null, "ev-nav");
     const order = model.events.slice().sort((a, b) => a.event_time_sec - b.event_time_sec);
     const idx = e ? order.findIndex((x) => x.event_id === e.event_id) : -1;
-    nav.appendChild(button("◀ 前の印", () => { const t = order[idx > 0 ? idx - 1 : order.length - 1]; if (t) selectEvent(t.event_id, true); }, "quiet small-btn"));
-    nav.appendChild(button("次の印 ▶", () => { const t = order[idx >= 0 && idx < order.length - 1 ? idx + 1 : 0]; if (t) selectEvent(t.event_id, true); }, "quiet small-btn"));
+    const go = (t, which) => { if (!t) return; selectEvent(t.event_id, true); const b = box.querySelector('[data-nav="' + which + '"]'); if (b) b.focus(); };
+    const prevB = button("◀ 前の印", () => go(order[idx > 0 ? idx - 1 : order.length - 1], "prev"), "quiet small-btn");
+    const nextB = button("次の印 ▶", () => go(order[idx >= 0 && idx < order.length - 1 ? idx + 1 : 0], "next"), "quiet small-btn");
+    prevB.dataset.nav = "prev";
+    nextB.dataset.nav = "next";
+    nav.appendChild(prevB);
+    nav.appendChild(nextB);
     nav.appendChild(node("span", order.length ? (idx >= 0 ? (idx + 1) + " / " + order.length : order.length + " 個の印") : "印がありません", "muted small"));
     box.appendChild(nav);
     if (!e) {
@@ -859,6 +884,7 @@
         if (r.job.state === "completed" && was !== "completed") { await openVideo(current.video.id); toast("解析が終わりました"); return; }
         if (r.job.state === "failed" && was !== "failed") toast("解析できませんでした: " + (r.job.error || ""), true);
         showJob();
+        if (model && (r.job.state === "failed" || r.job.state === "cancelled")) renderVersionNote();
       } catch (err) { toast(err.message, true); }
     }, 1500);
   }
