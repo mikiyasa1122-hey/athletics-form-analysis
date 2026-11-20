@@ -62,8 +62,10 @@ class MotionEvent:
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    ground_y: float              # 画像上の地面の高さ（px、下向き正）。撮影条件として与える
+    ground_y: float              # 画像上の地面の高さ（px、下向き正）。x = ground_x0 での値
     contact_band_px: float = 6.0
+    ground_slope: float = 0.0    # 地面の傾き（dy/dx）。カメラが傾いている・奥行き方向に走る場合
+    ground_x0: float = 0.0
     min_confidence: float = 0.5
     # 観測の途切れがこれ以上続くと、接地または滞空が丸ごと隠れうる（短距離の最短局面 ≒ 0.08s より短く取る）。
     # 暫定値。DEC-016 で種目ごとに決め直す。
@@ -71,6 +73,7 @@ class DetectorConfig:
 
     def to_json(self) -> dict[str, Any]:
         return {"ground_y": self.ground_y, "contact_band_px": self.contact_band_px,
+                "ground_slope": self.ground_slope, "ground_x0": self.ground_x0,
                 "min_confidence": self.min_confidence, "max_unobserved_s": self.max_unobserved_s}
 
 
@@ -98,8 +101,9 @@ def foot_state(pose: PoseFrame | None, side: str, cfg: DetectorConfig) -> tuple[
     visible = [p for p in pts if p is not None]
     if len(visible) < 2:   # 足先・踵のどちらも見えないなら判定しない
         return None, None
-    lowest = max(p.y for p in visible)
-    return lowest >= cfg.ground_y - cfg.contact_band_px, min(p.confidence for p in visible)
+    low = max(visible, key=lambda p: p.y)
+    ground = cfg.ground_y + cfg.ground_slope * (low.x - cfg.ground_x0)
+    return low.y >= ground - cfg.contact_band_px, min(p.confidence for p in visible)
 
 
 @dataclass
@@ -116,19 +120,32 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
         last_state: bool | None = None
         last_frame = None
         unobserved_between = False
+        reacquire_pending = False   # 取り直しのフレームで足が見えなくても、次に見えたところで区切る（再々レビュー N1）
         for frame in index.frames:
             if not frame.usable_for_timing:
                 unobserved_between = True
                 continue
             pose = poses.get(frame.source_frame_id)
+            if pose is not None and "reacquired" in pose.flags:
+                reacquire_pending = True
             state, score = foot_state(pose, side, cfg)
             if state is None:
                 if last_state is not None:
                     unobserved_between = True
                 continue
-            if last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
+            if last_state is not None and last_frame is not None and reacquire_pending:
+                # 対象の人物を見失って取り直した。別人の可能性があるので、つながず区切る（レビュー B4）
+                breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
+                                               last_frame.timestamp, frame.timestamp,
+                                               "対象の人物を見失い、取り直した（別人の可能性）"))
+            elif last_state is not None and last_frame is not None and frame.timestamp - last_frame.timestamp >= limit:
                 # 途切れが長いと、間で何回遷移したか分からない。イベントを作らず区切りとして記録する
-                why = "フレーム欠落" if "after_gap" in frame.flags and not unobserved_between else "観測できないフレームが続く"
+                if "after_decode_failure" in frame.flags and not unobserved_between:
+                    why = "復号できなかったフレーム"
+                elif "after_gap" in frame.flags and not unobserved_between:
+                    why = "フレーム欠落"
+                else:
+                    why = "観測できないフレームが続く"
                 breaks.append(ObservationBreak(side, last_frame.source_frame_id, frame.source_frame_id,
                                                last_frame.timestamp, frame.timestamp,
                                                f"{why}（{float(frame.timestamp - last_frame.timestamp) * 1000:.0f} ms）"))
@@ -138,6 +155,8 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                     reasons.append("遷移区間に観測できないフレームがある")
                 if "after_gap" in frame.flags:
                     reasons.append("フレーム欠落を挟む")
+                if "after_decode_failure" in frame.flags:
+                    reasons.append("復号できなかったフレームを挟む")
                 prev_pose = poses.get(last_frame.source_frame_id)
                 if (pose and DEGRADING_FLAGS & set(pose.flags)) or (prev_pose and DEGRADING_FLAGS & set(prev_pose.flags)):
                     reasons.append("イベント前後のフレームにモーションブラー")
@@ -151,6 +170,7 @@ def detect_events(index: FrameIndex, poses: dict[int, PoseFrame], cfg: DetectorC
                     quality_reasons=tuple(reasons), model_score=score,
                 ))
             last_state, last_frame, unobserved_between = state, frame, False
+            reacquire_pending = False
     return Detection(sort_events(events), sorted(breaks, key=lambda b: (b.lower, b.side)))
 
 
@@ -189,13 +209,16 @@ class Correction:
     event_type: str | None = None
     side: str | None = None
     after_frame_id: int | None = None   # 新状態が初めて見える原本フレーム
+    revoked_at: str | None = None       # 取り消した日時（記録は消さずに残す）
+    revoked_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> "Correction":
-        allowed = {"action", "corrected_by", "corrected_at", "reason", "event_id", "event_type", "side", "after_frame_id"}
+        allowed = {"action", "corrected_by", "corrected_at", "reason", "event_id", "event_type", "side", "after_frame_id",
+                   "revoked_at", "revoked_reason"}
         extra = set(d) - allowed
         if extra:
             raise CorrectionError(f"不明な項目: {sorted(extra)}")
@@ -209,11 +232,26 @@ class Correction:
 class EventLayers:
     auto: list[MotionEvent]
     corrections: list[Correction] = field(default_factory=list)
+    unapplied: list[dict[str, Any]] = field(default_factory=list)
 
-    def effective(self, index: FrameIndex, breaks: list[ObservationBreak] | None = None) -> list[MotionEvent]:
+    def effective(self, index: FrameIndex, breaks: list[ObservationBreak] | None = None,
+                  strict: bool = True) -> list[MotionEvent]:
+        """訂正を順に当てる。strict=False（保存済みの訂正での再解析）では、当てられない訂正で失敗せず記録する。
+
+        地面の線や推論のやり直しで自動イベントが変わると、訂正が参照していたイベントがなくなることがある。
+        その訂正は「適用できなかった訂正」として版に残し、解析自体は続ける（訂正は取り消しも作り直しもできる）。
+        """
         current = {e.event_id: e for e in self.auto}
-        for c in self.corrections:
-            current = _apply(current, c, index)
+        self.unapplied = []
+        for i, c in enumerate(self.corrections):
+            if c.revoked_at:
+                continue
+            try:
+                current = _apply(current, c, index)
+            except CorrectionError as exc:
+                if strict:
+                    raise
+                self.unapplied.append({"index": i, "correction": c.to_json(), "reason": str(exc)})
         return validate_sequence(sort_events(list(current.values())), breaks or [])
 
 

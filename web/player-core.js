@@ -152,6 +152,48 @@
     return Object.freeze(Object.assign({}, state, { loop: null }));
   }
 
+  /** 表示中の原本フレームの画像URL。画像は原本フレームIDで保存されているので、近いフレームの画像に置き換わらない。 */
+  function frameImageUrl(model, frameId) {
+    const fi = model.snapshot.frame_images;
+    if (!fi || !fi.url) return null;
+    if (!model.positionById.has(frameId)) return null;
+    return fi.url + frameId + "." + (fi.ext || "jpg");
+  }
+
+  /** 骨格の座標（原寸）を描画先に合わせる倍率。 */
+  function imageSize(model) {
+    const fi = model.snapshot.frame_images;
+    if (fi && Array.isArray(fi.image_size) && fi.image_size[0] > 0) {
+      return { width: fi.image_size[0], height: fi.image_size[1] };
+    }
+    return { width: 1280, height: 1000 };   // 合成デモ（画像なし）
+  }
+
+  /** 先読みする原本フレームIDの一覧（再生方向に count 枚）。 */
+  function prefetchIds(model, state, count) {
+    const ids = [];
+    for (let i = 1; i <= count && state.position + i < model.frames.length; i++) {
+      ids.push(model.frames[state.position + i].source_frame_id);
+    }
+    return ids;
+  }
+
+  /** 地面の線（解析で使ったもの）の、x での高さ。 */
+  function groundYAt(model, x) {
+    const d = model.snapshot.detector || {};
+    if (typeof d.ground_y !== "number") return null;
+    return d.ground_y + (d.ground_slope || 0) * (x - (d.ground_x0 || 0));
+  }
+
+  const STATUS_RANK = Object.freeze({ valid: 0, estimated: 1, review_required: 2, unavailable: 3 });
+
+  /** 解析全体の確かさ。出せた値のうち、いちばん弱い状態で決める（一部でも要確認なら「確定」とは言わない）。 */
+  function overallStatus(metrics) {
+    const usable = (metrics || []).filter((m) => m.status !== "unavailable");
+    if (!usable.length) return "unavailable";
+    return usable.reduce((a, m) => (STATUS_RANK[m.status] > STATUS_RANK[a] ? m.status : a), "valid");
+  }
+
   function eventsAtFrame(model, frameId) {
     return model.events.filter((e) => (e.source_frame_ids || []).includes(frameId));
   }
@@ -191,6 +233,11 @@
     loopAroundEvent: loopAroundEvent,
     clearLoop: clearLoop,
     eventsAtFrame: eventsAtFrame,
+    overallStatus: overallStatus,
+    frameImageUrl: frameImageUrl,
+    imageSize: imageSize,
+    prefetchIds: prefetchIds,
+    groundYAt: groundYAt,
     formatSeconds: formatSeconds,
     parseFraction: parseFraction,
     STATUS_LABEL: STATUS_LABEL,

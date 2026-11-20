@@ -18,11 +18,13 @@ KEYPOINTS = (
     "left_ankle", "right_ankle",
     "left_heel", "right_heel",
     "left_toe", "right_toe",
+    "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist",
 )
 
 
 # 点が出ていても、このフラグのフレームは観測として扱わない
-UNOBSERVABLE_POSE_FLAGS = frozenset({"occluded", "tracking_lost"})
+UNOBSERVABLE_POSE_FLAGS = frozenset({"occluded", "tracking_lost", "no_person", "ambiguous"})
 
 
 class PoseInputError(ValueError):

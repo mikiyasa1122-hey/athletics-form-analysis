@@ -92,6 +92,26 @@ class RecomputeTest(unittest.TestCase):
         self.assertTrue(any(e["event_id"] == "left-foot_contact-3-manual" for e in snap["events"]["effective"]))
 
 
+class UnappliedCorrectionTest(unittest.TestCase):
+    def test_unapplied_correction_caps_metrics(self):
+        # 再レビュー N2: 保存済みの訂正が当てられない（参照先のイベントがない）とき、解析は続けるが確かな値として出さない
+        from athform.analysis import analyze
+        from .helpers import make_input
+        inp = make_input(SPEC)
+        inp.strict_corrections = False
+        snap = analyze(inp, [Correction(action="delete", event_id="right-toe_off-99999", **WHO)])
+        self.assertEqual(len(snap["events"]["unapplied_corrections"]), 1)
+        live = [m for m in snap["metrics"] if m["status"] != "unavailable"]
+        self.assertTrue(live)
+        for m in live:
+            self.assertEqual(m["status"], "review_required")
+            self.assertTrue(any("適用できなかった手動訂正" in r for r in m["reasons"]))
+
+    def test_strict_mode_still_raises(self):
+        with self.assertRaises(CorrectionError):
+            run(SPEC, [Correction(action="delete", event_id="right-toe_off-99999", **WHO)])
+
+
 class InvalidCorrectionTest(unittest.TestCase):
     def test_rejected(self):
         base = run(SPEC)

@@ -3,71 +3,296 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>フォーム解析ビューア</title>
+  <title>フォームノート</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
-    <h1>フォーム解析ビューア</h1>
-    <div class="loaders">
-      <label>デモ
-        <select id="demo-select" aria-label="デモ解析を選ぶ"></select>
-      </label>
-      <label class="file">解析結果JSONを開く
-        <input id="file-input" type="file" accept="application/json,.json">
-      </label>
-    </div>
+  <header class="bar">
+    <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"></span>フォームノート</a>
+    <nav class="tabs" aria-label="メニュー">
+      <a id="nav-home" href="#/">練習</a>
+      <a id="nav-compare" href="#/compare">比較</a>
+    </nav>
   </header>
 
-  <p id="load-error" class="error" role="alert" hidden></p>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-  <main class="layout">
-    <section class="player" aria-label="プレイヤー">
-      <canvas id="stage" width="1280" height="1000" aria-label="骨格の表示"></canvas>
-
-      <div class="readout" aria-live="polite">
-        <div><span class="k">原本フレームID</span><span id="ro-frame" class="v mono"></span></div>
-        <div><span class="k">PTS / time_base</span><span id="ro-pts" class="v mono"></span></div>
-        <div><span class="k">元動画時刻</span><span id="ro-time" class="v mono"></span></div>
-        <div><span class="k">再生の経過時間（表示上）</span><span id="ro-elapsed" class="v mono"></span></div>
-        <div><span class="k">骨格のフレームID</span><span id="ro-overlay" class="v mono"></span></div>
-        <div><span class="k">このフレームのイベント</span><span id="ro-events" class="v"></span></div>
+  <!-- ===== 練習（一覧） ===== -->
+  <main id="view-home" class="page" hidden>
+    <section class="drop" id="drop" tabindex="0" aria-label="動画を追加">
+      <input id="up-file" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.ogv" hidden>
+      <div class="drop-empty" id="drop-empty">
+        <p class="drop-title">走りの動画をここにドロップ</p>
+        <p class="drop-sub">またはクリックして選ぶ ・ 横から、カメラを固定して撮った動画がいちばん正確です</p>
       </div>
 
-      <div class="controls">
-        <button id="btn-prev" type="button" title="1フレーム戻る（←）">◀ 1</button>
-        <button id="btn-play" type="button" title="再生 / 一時停止（Space）">再生</button>
-        <button id="btn-next" type="button" title="1フレーム進む（→）">1 ▶</button>
-        <label>再生倍率
-          <select id="rate-select" aria-label="再生倍率"></select>
-        </label>
-        <input id="scrubber" type="range" min="0" max="0" value="0" aria-label="原本フレーム位置">
-        <button id="btn-unloop" type="button" hidden>ループ解除</button>
+      <form id="upload-form" class="setup" hidden>
+        <div class="setup-file">
+          <span class="file-name" id="up-name"></span>
+          <button type="button" class="link" id="up-change">別の動画にする</button>
+        </div>
+
+        <div class="field">
+          <span class="label">種目</span>
+          <select id="up-discipline" required></select>
+          <span class="hint" id="up-discipline-note"></span>
+        </div>
+
+        <div class="field">
+          <span class="label">走る向き</span>
+          <div class="seg" role="radiogroup" id="up-direction">
+            <button type="button" role="radio" data-value="left_to_right" aria-checked="true">左から右 →</button>
+            <button type="button" role="radio" data-value="right_to_left" aria-checked="false">← 右から左</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="label">撮った位置</span>
+          <div class="seg" role="radiogroup" id="up-view">
+            <button type="button" role="radio" data-value="side" aria-checked="true">横</button>
+            <button type="button" role="radio" data-value="oblique" aria-checked="false">斜め</button>
+            <button type="button" role="radio" data-value="front" aria-checked="false">正面</button>
+            <button type="button" role="radio" data-value="rear" aria-checked="false">後ろ</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="label">練習日</span>
+          <input id="up-date" type="date">
+        </div>
+
+        <details class="more">
+          <summary>メモ・記録・撮影の設定</summary>
+          <div class="more-grid">
+            <label class="field"><span class="label">メモ</span><textarea id="up-notes" rows="2" maxlength="2000" placeholder="例: 2本目、向かい風"></textarea></label>
+            <label class="field"><span class="label">タイム・記録</span><input id="up-record" type="text" maxlength="200" placeholder="11.42"></label>
+            <label class="field"><span class="label">場所</span><input id="up-place" type="text" maxlength="200"></label>
+            <label class="field"><span class="label">タグ</span><input id="up-tags" type="text" maxlength="200" placeholder="加速, 試合（カンマ区切り）"></label>
+            <label class="field"><span class="label">撮影したときのFPS</span><input id="up-fps" type="text" inputmode="decimal" maxlength="8" placeholder="分かれば 240 など"></label>
+            <label class="check"><input id="up-slowmo" type="checkbox"> スローモーションとして書き出した動画</label>
+          </div>
+        </details>
+
+        <div class="setup-actions">
+          <button id="up-submit" type="submit" class="primary">解析を始める</button>
+          <div class="upload-progress" id="up-progress-wrap" hidden>
+            <div class="meter"><span id="up-progress"></span></div>
+            <span id="up-status" class="muted"></span>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <section aria-labelledby="h-list">
+      <div class="list-head">
+        <h2 id="h-list">これまでの練習</h2>
+        <form id="filter-form" class="filters" role="search">
+          <input id="f-q" type="search" placeholder="メモ・ファイル名・場所で探す" aria-label="検索">
+          <select id="f-discipline" aria-label="種目で絞る"></select>
+          <details class="more inline">
+            <summary>期間・タグ</summary>
+            <div class="more-row">
+              <input id="f-from" type="date" aria-label="開始日"> 〜 <input id="f-to" type="date" aria-label="終了日">
+              <input id="f-tag" type="text" placeholder="タグ" aria-label="タグ">
+            </div>
+          </details>
+        </form>
       </div>
-      <p class="note">再生倍率は表示の速さだけを変えます。元動画時刻・フレームID・解析値は変わりません。</p>
+      <div id="video-list" class="cards"></div>
+      <p id="list-empty" class="empty-note" hidden>まだ動画がありません。上に動画をドロップして始めましょう。</p>
+    </section>
+  </main>
+
+  <!-- ===== 解析 ===== -->
+  <main id="view-video" class="page page-wide" hidden>
+    <div class="crumbs">
+      <a href="#/" class="back">← 練習</a>
+      <div class="title-block">
+        <h1 id="v-title"></h1>
+        <p id="v-sub" class="muted"></p>
+      </div>
+      <details class="menu">
+        <summary aria-label="その他の操作">…</summary>
+        <div class="menu-pop">
+          <a id="export-link" href="#">データを書き出す（JSON）</a>
+          <button id="rerun" type="button">姿勢推定からやり直す</button>
+          <button id="delete-video" type="button" class="danger">この動画を削除</button>
+        </div>
+      </details>
+    </div>
+
+    <p id="version-note" class="notice" hidden></p>
+
+    <!-- 解析中・未解析 -->
+    <section id="job-box" class="job" hidden>
+      <div class="job-row">
+        <div>
+          <p class="job-title" id="job-text"></p>
+          <p class="muted" id="job-eta"></p>
+        </div>
+        <button id="job-cancel" type="button" class="quiet">取り消す</button>
+      </div>
+      <div class="meter big"><span id="job-progress"></span></div>
+      <p class="muted small">この画面を閉じても解析は続きます。</p>
     </section>
 
-    <aside class="quality" aria-label="撮影と時間軸の品質">
-      <h2>撮影・時間軸</h2>
-      <dl id="quality-list"></dl>
-      <ul id="quality-notes" class="notes"></ul>
-    </aside>
-
-    <section class="events" aria-label="イベント">
-      <h2>イベント（接地・離地）</h2>
-      <table>
-        <thead><tr><th>種類</th><th>足</th><th>時刻区間（元動画）</th><th>挟むフレーム</th><th>状態</th><th></th></tr></thead>
-        <tbody id="events-body"></tbody>
-      </table>
+    <section id="no-analysis" class="empty-state" hidden>
+      <p id="no-analysis-text" class="lead"></p>
+      <div class="row">
+        <button id="run-performance" type="button" class="primary">解析する</button>
+        <button id="run-balanced" type="button" class="quiet">まず軽く試す（精度は低め・速い）</button>
+      </div>
     </section>
 
-    <section class="metrics" aria-label="指標">
-      <h2>指標</h2>
-      <table>
-        <thead><tr><th>指標</th><th>足</th><th>値</th><th>状態</th><th>理由・制約</th><th>根拠</th></tr></thead>
-        <tbody id="metrics-body"></tbody>
-      </table>
-    </section>
+    <div id="player" class="workspace" hidden>
+      <section class="stage-col">
+        <div class="stage-wrap">
+          <canvas id="stage" width="1280" height="720" aria-label="映像と骨格"></canvas>
+          <div id="pick-hint" class="pick-hint" hidden></div>
+        </div>
+
+        <div class="transport">
+          <button id="btn-prev" type="button" class="icon" title="1コマ戻る（←）" aria-label="1コマ戻る">◀︎</button>
+          <button id="btn-play" type="button" class="icon play" title="再生 / 一時停止（スペース）" aria-label="再生">▶︎</button>
+          <button id="btn-next" type="button" class="icon" title="1コマ進む（→）" aria-label="1コマ進む">▶︎</button>
+          <div class="seg small" role="radiogroup" id="rate-seg" aria-label="再生の速さ"></div>
+          <span class="clock mono" id="ro-time"></span>
+          <span class="spacer"></span>
+          <button id="show-skeleton" type="button" class="toggle" aria-pressed="true">骨格</button>
+          <button id="show-ground" type="button" class="toggle" aria-pressed="true">地面</button>
+          <button id="person-pick" type="button" class="quiet small-btn" title="映像の中で、解析したい人をクリックして選ぶ" aria-pressed="false">人を選ぶ</button>
+          <button id="ground-pick" type="button" class="quiet small-btn" title="映像の地面を2点クリックして決める">地面を指定</button>
+          <button id="ground-reset" type="button" class="link small" hidden>自動推定に戻す</button>
+          <button id="btn-unloop" type="button" class="quiet" hidden>ループをやめる</button>
+        </div>
+
+        <div class="timeline-wrap">
+          <div class="lanes-label" aria-hidden="true"><span>左足</span><span>右足</span></div>
+          <canvas id="timeline" height="76" aria-label="接地のタイムライン。クリックでその時刻へ移動"></canvas>
+        </div>
+        <p class="legend muted small">
+          <span class="sw sw-l"></span>左足の接地 <span class="sw sw-r"></span>右足の接地
+          <span class="sw sw-gap"></span>見えていない区間 ・ ←→でコマ送り、スペースで再生
+        </p>
+
+        <details class="tech">
+          <summary>フレームの詳しい情報</summary>
+          <dl class="kv">
+            <dt>原本フレーム</dt><dd id="ro-frame" class="mono"></dd>
+            <dt>PTS / time_base</dt><dd id="ro-pts" class="mono"></dd>
+            <dt>再生した時間</dt><dd id="ro-elapsed" class="mono"></dd>
+            <dt>骨格のフレーム</dt><dd id="ro-overlay" class="mono"></dd>
+            <dt>このコマの出来事</dt><dd id="ro-events"></dd>
+          </dl>
+        </details>
+      </section>
+
+      <aside class="side-col">
+        <section id="trust" class="trust"></section>
+
+        <section>
+          <h2 class="section-title">結果</h2>
+          <div id="summary" class="summary"></div>
+          <p class="muted small" id="feedback-text"></p>
+        </section>
+
+        <section class="edit">
+          <div class="section-head">
+            <h2 class="section-title">接地・離地</h2>
+            <button id="edit-toggle" type="button" class="toggle" aria-pressed="false">修正する</button>
+          </div>
+          <p class="muted small" id="events-summary"></p>
+          <div id="edit-panel" hidden>
+            <p class="small">タイムラインの印を選ぶか、コマ送りで正しいコマを表示してから操作します。</p>
+            <div class="field">
+              <span class="label">理由</span>
+              <input id="c-reason" type="text" maxlength="200" placeholder="例: 映像では足がまだ浮いている">
+              <div class="chips" id="reason-chips"></div>
+            </div>
+            <div id="inspector" class="inspector"></div>
+            <div class="row wrap">
+              <button id="c-add-contact-left" type="button" class="quiet">ここを左足の接地に</button>
+              <button id="c-add-contact-right" type="button" class="quiet">ここを右足の接地に</button>
+              <button id="c-add-off-left" type="button" class="quiet">ここを左足の離地に</button>
+              <button id="c-add-off-right" type="button" class="quiet">ここを右足の離地に</button>
+            </div>
+            <p id="c-status" class="small" aria-live="polite"></p>
+            <details class="tech">
+              <summary>修正の記録</summary>
+              <ul id="corrections-list" class="plain"></ul>
+            </details>
+          </div>
+        </section>
+
+        <details class="panel-d">
+          <summary>動画の情報を変える</summary>
+          <form id="meta-form" class="stack">
+            <label class="field"><span class="label">種目</span><select id="m-discipline"></select></label>
+            <div class="field">
+              <span class="label">走る向き</span>
+              <div class="seg" role="radiogroup" id="m-direction">
+                <button type="button" role="radio" data-value="left_to_right" aria-checked="true">左から右 →</button>
+                <button type="button" role="radio" data-value="right_to_left" aria-checked="false">← 右から左</button>
+              </div>
+            </div>
+            <div class="field">
+              <span class="label">撮った位置</span>
+              <div class="seg" role="radiogroup" id="m-view">
+                <button type="button" role="radio" data-value="side" aria-checked="true">横</button>
+                <button type="button" role="radio" data-value="oblique" aria-checked="false">斜め</button>
+                <button type="button" role="radio" data-value="front" aria-checked="false">正面</button>
+                <button type="button" role="radio" data-value="rear" aria-checked="false">後ろ</button>
+              </div>
+            </div>
+            <label class="field"><span class="label">練習日</span><input id="m-date" type="date"></label>
+            <label class="field"><span class="label">タイム・記録</span><input id="m-record" type="text" maxlength="200"></label>
+            <label class="field"><span class="label">場所</span><input id="m-place" type="text" maxlength="200"></label>
+            <label class="field"><span class="label">タグ</span><input id="m-tags" type="text" maxlength="200"></label>
+            <label class="field"><span class="label">撮影したときのFPS</span><input id="m-fps" type="text" maxlength="8"></label>
+            <label class="check"><input id="m-slowmo" type="checkbox"> スローモーションとして書き出した動画</label>
+            <label class="field"><span class="label">メモ</span><textarea id="m-notes" rows="3" maxlength="2000"></textarea></label>
+            <div class="row"><button id="m-save" type="submit" class="primary">保存して計算し直す</button><span id="m-status" class="muted small"></span></div>
+          </form>
+        </details>
+
+        <details class="panel-d">
+          <summary>撮影と時間の情報</summary>
+          <dl id="quality-list" class="kv"></dl>
+          <ul id="quality-notes" class="plain muted small"></ul>
+          <h3 class="mini">この種目で出していない値</h3>
+          <ul id="unsupported-list" class="plain muted small"></ul>
+        </details>
+
+        <details class="panel-d">
+          <summary>解析の履歴</summary>
+          <ul id="history-list" class="plain"></ul>
+        </details>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ===== 比較 ===== -->
+  <main id="view-compare" class="page" hidden>
+    <h1 class="page-title">比較</h1>
+    <p class="muted">2つの練習、または同じ動画の前半と後半を並べます。違いの大きさだけを示し、良い・悪いは判断しません。</p>
+    <form id="compare-form" class="compare-form">
+      <div class="cmp-side">
+        <span class="cmp-tag">A</span>
+        <select id="cmp-a" required aria-label="A の動画"></select>
+        <input id="cmp-ra" type="text" placeholder="範囲（コマ）例 0-120" aria-label="A の範囲">
+      </div>
+      <div class="cmp-side">
+        <span class="cmp-tag b">B</span>
+        <select id="cmp-b" aria-label="B の動画"></select>
+        <input id="cmp-rb" type="text" placeholder="範囲（コマ）例 121-240" aria-label="B の範囲">
+      </div>
+      <button type="submit" class="primary">比べる</button>
+    </form>
+    <div id="cmp-result" hidden>
+      <ul id="cmp-blocking" class="plain notice-list"></ul>
+      <ul id="cmp-warnings" class="plain muted small"></ul>
+      <div id="cmp-body" class="cmp-rows"></div>
+    </div>
   </main>
 
   <script src="player-core.js"></script>
